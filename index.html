@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>大樂透Firestore跨平台部署版</title>
+    <!-- 載入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 載入 SheetJS (用於 Excel 檔案 I/O) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <script type="module">
+        // 跨平台修正：這裡必須從 CDN 載入 Firebase 模組
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, query, orderBy, onSnapshot, setDoc, doc, writeBatch, getDocs, limit, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Tailwind Configuration (略)
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'Noto Sans TC', 'sans-serif'],
+                    },
+                    colors: {
+                        'primary': '#DC2626', // Red
+                        'secondary': '#FACC15', // Yellow
+                        'dark-bg': '#1F2937', // Dark Slate
+                        'card-bg': '#374151', // Slightly Lighter Slate
+                    }
+                }
+            }
+        }
+        
+        // --- 全局變數 ---
+        let db = null;
+        let auth = null;
+        let userId = 'loading'; 
+        let isAuthReady = false;
+        let dataStore = [];
+        let unsubscribe = () => {}; 
+
+        // Firestore 路徑
+        let COLLECTION_PATH = '';
+
+        // 初始數據集 (78 筆 2025 年紀錄，格式為 MM/DD)
+        const initialLottoData = [
+            {"drawId": "114000001", "date": "01/03", "main": [6, 9, 15, 29, 30, 48], "special": 23},
+            {"drawId": "114000002", "date": "01/07", "main": [1, 8, 20, 26, 29, 35], "special": 19},
+            {"drawId": "114000003", "date": "01/10", "main": [14, 29, 35, 36, 37, 49], "special": 40},
+            {"drawId": "114000004", "date": "01/14", "main": [1, 3, 13, 15, 37, 48], "special": 42},
+            {"drawId": "114000005", "date": "01/17", "main": [11, 18, 32, 39, 44, 49], "special": 46},
+            {"drawId": "114000006", "date": "01/21", "main": [6, 21, 35, 36, 38, 42], "special": 22},
+            {"drawId": "114000007", "date": "01/24", "main": [6, 22, 23, 30, 36, 37], "special": 13},
+            {"drawId": "114000008", "date": "01/28", "main": [2, 17, 19, 21, 23, 39], "special": 38},
+            {"drawId": "114000009", "date": "01/31", "main": [4, 11, 19, 21, 38, 43], "special": 1},
+            {"drawId": "114000010", "date": "02/04", "main": [10, 15, 17, 28, 41, 48], "special": 45},
+            {"drawId": "114000011", "date": "02/07", "main": [1, 10, 11, 31, 33, 44], "special": 43},
+            {"drawId": "114000012", "date": "02/11", "main": [12, 16, 24, 27, 34, 49], "special": 36},
+            {"drawId": "114000013", "date": "02/14", "main": [7, 12, 18, 23, 27, 30], "special": 41},
+            {"drawId": "114000014", "date": "02/18", "main": [5, 11, 13, 16, 33, 39], "special": 46},
+            {"drawId": "114000015", "date": "02/21", "main": [3, 22, 28, 36, 39, 43], "special": 35},
+            {"drawId": "114000016", "date": "02/25", "main": [10, 20, 27, 32, 41, 44], "special": 47},
+            {"drawId": "114000017", "date": "02/28", "main": [15, 23, 26, 30, 40, 44], "special": 1},
+            {"drawId": "114000018", "date": "03/03", "main": [7, 8, 11, 18, 34, 49], "special": 15},
+            {"drawId": "114000019", "date": "03/06", "main": [4, 15, 21, 23, 30, 42], "special": 32},
+            {"drawId": "114000020", "date": "03/10", "main": [1, 12, 16, 21, 37, 40], "special": 47},
+            {"drawId": "114000021", "date": "03/13", "main": [3, 11, 25, 28, 33, 46], "special": 2},
+            {"drawId": "114000022", "date": "03/17", "main": [2, 10, 14, 25, 29, 39], "special": 38},
+            {"drawId": "114000023", "date": "03/20", "main": [5, 6, 22, 24, 31, 41], "special": 18},
+            {"drawId": "114000024", "date": "03/24", "main": [10, 13, 26, 29, 32, 42], "special": 14},
+            {"drawId": "114000025", "date": "03/27", "main": [1, 5, 18, 22, 38, 48], "special": 44},
+            {"drawId": "114000026", "date": "03/31", "main": [13, 27, 33, 39, 45, 46], "special": 19},
+            {"drawId": "114000027", "date": "04/04", "main": [7, 20, 29, 40, 43, 47], "special": 28},
+            {"drawId": "114000028", "date": "04/08", "main": [10, 26, 33, 39, 45, 46], "special": 19},
+            {"drawId": "114000029", "date": "04/11", "main": [6, 10, 11, 17, 23, 32], "special": 27},
+            {"drawId": "114000030", "date": "04/15", "main": [18, 28, 37, 41, 43, 46], "special": 11},
+            {"drawId": "114000031", "date": "04/18", "main": [2, 8, 15, 22, 29, 45], "special": 9},
+            {"drawId": "114000032", "date": "04/22", "main": [1, 6, 14, 19, 35, 49], "special": 8},
+            {"drawId": "114000033", "date": "04/25", "main": [20, 21, 24, 25, 31, 35], "special": 28},
+            {"drawId": "114000034", "date": "04/29", "main": [7, 11, 24, 26, 30, 42], "special": 37},
+            {"drawId": "114000035", "date": "05/02", "main": [2, 5, 39, 43, 45, 47], "special": 26},
+            {"drawId": "114000036", "date": "05/06", "main": [5, 8, 9, 25, 30, 45], "special": 31},
+            {"drawId": "114000037", "date": "05/09", "main": [15, 27, 33, 42, 48, 49], "special": 39},
+            {"drawId": "114000038", "date": "05/13", "main": [1, 23, 29, 41, 45, 49], "special": 24},
+            {"drawId": "114000039", "date": "05/16", "main": [13, 16, 22, 23, 34, 39], "special": 14},
+            {"drawId": "114000040", "date": "05/20", "main": [2, 11, 15, 26, 29, 48], "special": 31},
+            {"drawId": "114000041", "date": "05/23", "main": [1, 7, 11, 24, 44, 48], "special": 10},
+            {"drawId": "114000042", "date": "05/27", "main": [16, 17, 26, 29, 32, 40], "special": 10},
+            {"drawId": "114000043", "date": "05/30", "main": [3, 4, 13, 21, 38, 46], "special": 2},
+            {"drawId": "114000044", "date": "06/03", "main": [9, 24, 32, 40, 41, 49], "special": 27},
+            {"drawId": "114000045", "date": "06/06", "main": [11, 13, 15, 39, 42, 46], "special": 28},
+            {"drawId": "114000046", "date": "06/10", "main": [3, 5, 12, 16, 22, 48], "special": 30},
+            {"drawId": "114000047", "date": "06/13", "main": [1, 2, 10, 13, 20, 27], "special": 49},
+            {"drawId": "114000048", "date": "06/17", "main": [13, 20, 21, 26, 31, 44], "special": 28},
+            {"drawId": "114000049", "date": "06/20", "main": [4, 20, 31, 40, 42, 48], "special": 24},
+            {"drawId": "114000050", "date": "06/24", "main": [3, 8, 20, 37, 45, 49], "special": 21},
+            {"drawId": "114000051", "date": "06/27", "main": [4, 8, 9, 14, 21, 39], "special": 37},
+            {"drawId": "114000052", "date": "07/01", "main": [8, 9, 21, 25, 33, 34], "special": 2},
+            {"drawId": "114000053", "date": "07/04", "main": [5, 13, 15, 18, 33, 37], "special": 45},
+            {"drawId": "114000054", "date": "07/08", "main": [6, 8, 12, 14, 25, 35], "special": 49},
+            {"drawId": "114000055", "date": "07/11", "main": [15, 16, 26, 34, 48, 49], "special": 46},
+            {"drawId": "114000056", "date": "07/15", "main": [32, 33, 41, 45, 46, 49], "special": 10},
+            {"drawId": "114000057", "date": "07/18", "main": [2, 25, 36, 37, 38, 46], "special": 24},
+            {"drawId": "114000058", "date": "07/22", "main": [5, 17, 19, 26, 27, 39], "special": 10},
+            {"drawId": "114000059", "date": "07/25", "main": [2, 4, 23, 35, 41, 47], "special": 6},
+            {"drawId": "114000060", "date": "07/29", "main": [2, 5, 14, 19, 36, 45], "special": 43},
+            {"drawId": "114000061", "date": "08/01", "main": [4, 14, 19, 28, 40, 41], "special": 31},
+            {"drawId": "114000062", "date": "08/05", "main": [1, 20, 34, 36, 37, 40], "special": 3},
+            {"drawId": "114000063", "date": "08/08", "main": [11, 16, 17, 21, 24, 29], "special": 34},
+            {"drawId": "114000064", "date": "08/12", "main": [6, 7, 15, 22, 37, 42], "special": 36},
+            {"drawId": "114000065", "date": "08/15", "main": [3, 5, 7, 15, 17, 47], "special": 34},
+            {"drawId": "114000066", "date": "08/19", "main": [2, 23, 25, 33, 41, 46], "special": 22},
+            {"drawId": "114000067", "date": "08/22", "main": [23, 33, 38, 43, 45, 47], "special": 36},
+            {"drawId": "114000068", "date": "08/26", "main": [3, 6, 22, 32, 35, 39], "special": 27},
+            {"drawId": "114000069", "date": "08/29", "main": [13, 20, 25, 27, 28, 32], "special": 2},
+            {"drawId": "114000070", "date": "09/02", "main": [2, 6, 9, 19, 20, 30], "special": 25},
+            {"drawId": "114000071", "date": "09/05", "main": [10, 13, 14, 17, 19, 29], "special": 40},
+            {"drawId": "114000072", "date": "09/09", "main": [12, 20, 25, 26, 40, 45], "special": 34},
+            {"drawId": "114000073", "date": "09/12", "main": [2, 3, 4, 11, 15, 41], "special": 26},
+            {"drawId": "114000074", "date": "09/16", "main": [7, 17, 18, 22, 25, 47], "special": 38},
+            {"drawId": "114000075", "date": "09/19", "main": [14, 17, 26, 36, 38, 41], "special": 8},
+            {"drawId": "114000076", "date": "09/23", "main": [5, 14, 22, 25, 27, 45], "special": 3},
+            {"drawId": "114000077", "date": "09/26", "main": [1, 2, 25, 29, 41, 49], "special": 35},
+            {"drawId": "114000078", "date": "09/30", "main": [19, 20, 22, 32, 36, 42], "special": 35}
+        ];
+        
+        // --- 設定您自己的 Firebase Config ---
+        // !!! WARNING !!! 
+        // 為了在外部平台運行，您必須替換下面的 YOUR_FIREBASE_CONFIG
+        // 如果您已經有一個 Firebase 專案，請將您的專案配置貼在這裡。
+        // 如果您沒有，您需要先建立一個 Firebase 專案，並取得 Web App 的設定。
+        const EXTERNAL_FIREBASE_CONFIG = {
+        apiKey: "AIzaSyC0GlNeFeV5_R05imC1OWmyNdP1OR2c6MI",
+    authDomain: "lotto-analyzer-e424e.firebaseapp.com",
+    projectId: "lotto-analyzer-e424e",
+    storageBucket: "lotto-analyzer-e424e.firebasestorage.app",
+    messagingSenderId: "932809120947",
+    appId: "1:932809120947:web:b2dc105adff390c31ba4c6",
+    measurementId: "G-PESKZ6YGT1"
+        };
+        
+        // --- 核心初始化流程 (已修改為跨平台兼容) ---
+
+        async function initializeFirebase() {
+            try {
+                let config = EXTERNAL_FIREBASE_CONFIG;
+                let appIdForPath = config.projectId || 'external-app';
+
+                // 1. 檢查是否在 Canvas 環境中運行 (如果運行，優先使用 Canvas 提供的配置)
+                if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                    config = JSON.parse(__firebase_config);
+                    appIdForPath = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                    console.log("運行環境: Canvas (使用內建配置)");
+                } else if (config.apiKey === "YOUR_FIREBASE_API_KEY") {
+                    // 如果用戶沒有替換自己的配置，則拋出警告
+                    throw new Error("請先在程式碼中替換 YOUR_FIREBASE_CONFIG 為您自己的 Firebase 專案設定。");
+                } else {
+                    console.log("運行環境: 外部平台 (使用外部配置)");
+                }
+
+                if (!config || !config.apiKey) {
+                    throw new Error("Firebase configuration is missing or invalid.");
+                }
+
+                const app = initializeApp(config);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                setLogLevel('debug');
+                
+                // 設定公用資料的路徑
+                COLLECTION_PATH = `artifacts/${appIdForPath}/public/data/lotto_draws`;
+                
+                // 2. 身份驗證 (跨平台修正: 優先使用自定義Token, 否則匿名登入)
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth); // 外部平台統一使用匿名登入
+                }
+
+                userId = auth.currentUser?.uid || 'anonymous';
+                isAuthReady = true;
+
+                // 3. 檢查並寫入初始數據
+                await seedInitialData();
+
+                // 4. 建立實時監聽
+                setupRealtimeListener();
+                
+                // 5. 顯示 UI
+                document.getElementById('loading-indicator').classList.add('hidden');
+                document.getElementById('main-content').classList.remove('hidden');
+                document.getElementById('user-id-display').textContent = `User ID: ${userId} (Collection: ${COLLECTION_PATH})`;
+
+                // 6. 設置事件監聽器
+                document.getElementById('add-result-form').addEventListener('submit', handleAddResult);
+                document.getElementById('export-data-btn').addEventListener('click', exportData);
+                document.getElementById('import-file-input').addEventListener('change', importData);
+
+            } catch (error) {
+                console.error("Firebase 啟動失敗:", error);
+                document.getElementById('loading-indicator').innerHTML = `
+                    <div class="text-red-500 text-center">
+                        <p class="text-xl font-bold">❌ 應用程式啟動失敗 (Firebase 錯誤)</p>
+                        <p class="text-sm mt-2">錯誤訊息: ${error.message}</p>
+                        <p class="text-sm mt-4 text-yellow-300">
+                           <span class="font-bold">部署提示:</span> 
+                           請確保您已在程式碼中替換 
+                           <code class="bg-gray-700 p-1 rounded">EXTERNAL_FIREBASE_CONFIG</code> 
+                           為您自己的專案設定。
+                        </p>
+                    </div>`;
+            }
+        }
+        
+        async function seedInitialData() {
+            try {
+                if (!db) return;
+                const q = query(collection(db, COLLECTION_PATH), limit(1));
+                const snapshot = await getDocs(q);
+
+                if (snapshot.empty) {
+                    const batch = writeBatch(db);
+                    let counter = 0;
+                    initialLottoData.forEach(record => {
+                        const docRef = doc(db, COLLECTION_PATH, record.drawId);
+                        batch.set(docRef, {
+                            ...record,
+                            date: record.date.toString().trim(), 
+                            timestamp: serverTimestamp() 
+                        });
+                        counter++;
+                    });
+                    await batch.commit();
+                }
+            } catch (error) {
+                console.error("寫入初始數據失敗:", error);
+            }
+        }
+
+
+        function setupRealtimeListener() {
+            unsubscribe(); 
+            
+            if (!db || !isAuthReady) return;
+            
+            const q = query(collection(db, COLLECTION_PATH), orderBy('drawId', 'desc'));
+
+            unsubscribe = onSnapshot(q, (snapshot) => {
+                const records = [];
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    records.push({
+                        ...data,
+                        drawId: doc.id, 
+                    });
+                });
+                dataStore = records;
+                processAndRenderData(dataStore);
+                
+            }, (error) => {
+                console.error("實時監聽錯誤:", error);
+            });
+        }
+
+        function processAndRenderData(records) {
+            // ... (核心分析邏輯與前版相同)
+             if (records.length === 0) {
+                document.getElementById('prediction-results').innerHTML = '<p class="text-center text-gray-400 p-4">無歷史紀錄，無法進行分析。</p>';
+                document.getElementById('freq-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
+                document.getElementById('weighted-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
+                document.getElementById('cooccurrence-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
+                document.getElementById('history-table').innerHTML = '<tr><td colspan="4" class="text-center py-4 text-gray-500">尚無開獎紀錄</td></tr>';
+                return;
+            }
+
+            const freqMap = new Map();
+            const weightedFreqMap = new Map();
+            const gapMap = new Map();
+            const cooccurrenceMap = new Map();
+            const numRange = Array.from({ length: 49 }, (_, i) => i + 1);
+            let drawIndex = 0; 
+
+            numRange.forEach(n => {
+                freqMap.set(n, 0);
+                weightedFreqMap.set(n, 0);
+                gapMap.set(n, records.length); 
+            });
+
+            for (const record of records) {
+                if (!record.main || !Array.isArray(record.main) || record.main.length !== 6 || isNaN(record.special)) continue;
+
+                const allNumbers = [...record.main, record.special];
+                const mainNumbers = record.main.slice().sort((a, b) => a - b);
+                
+                const weight = (records.length - drawIndex) / records.length; 
+
+                for (const num of allNumbers) {
+                    freqMap.set(num, (freqMap.get(num) || 0) + 1);
+                    
+                    if (record.main.includes(num)) {
+                        weightedFreqMap.set(num, weightedFreqMap.get(num) + weight);
+                    }
+
+                    if (gapMap.get(num) === records.length) {
+                        gapMap.set(num, drawIndex);
+                    }
+                }
+
+                for (let i = 0; i < mainNumbers.length; i++) {
+                    for (let j = i + 1; j < mainNumbers.length; j++) {
+                        const pair = `${mainNumbers[i].toString().padStart(2, '0')},${mainNumbers[j].toString().padStart(2, '0')}`;
+                        cooccurrenceMap.set(pair, (cooccurrenceMap.get(pair) || 0) + 1);
+                    }
+                }
+
+                drawIndex++;
+            }
+            
+            if (drawIndex === 0) {
+                 document.getElementById('prediction-results').innerHTML = '<p class="text-center text-red-400 p-4">所有紀錄皆無效或格式錯誤，無法進行分析。</p>';
+                return;
+            }
+
+
+            const sortedFreq = Array.from(freqMap.entries()).filter(([num]) => num <= 49 && freqMap.get(num) > 0).sort((a, b) => b[1] - a[1]);
+            const sortedWeighted = Array.from(weightedFreqMap.entries()).filter(([num]) => num <= 49 && weightedFreqMap.get(num) > 0).sort((a, b) => b[1] - a[1]);
+            const sortedCooccurrence = Array.from(cooccurrenceMap.entries()).sort((a, b) => b[1] - a[1]);
+            const sortedGap = Array.from(gapMap.entries()).filter(([num]) => num <= 49).sort((a, b) => b[1] - a[1]);
+
+            const predictions = generatePredictions(sortedWeighted, sortedFreq, sortedGap);
+            renderStats(records, sortedFreq.slice(0, 10), sortedWeighted.slice(0, 10), sortedCooccurrence.slice(0, 10), predictions);
+        }
+        
+        function generatePredictions(sortedWeighted, sortedFreq, sortedGap) {
+            const safePick = (sourceArray, existingSet, n) => {
+                const picked = [];
+                const localSet = new Set(existingSet);
+                let available = sourceArray.map(item => item[0]).filter(num => !localSet.has(num));
+
+                const pickFromRange = (arr, count) => arr.sort(() => 0.5 - Math.random()).slice(0, count);
+
+                const ranges = { low: [], mid: [], high: [] };
+                available.forEach(num => {
+                    if (num >= 1 && num <= 16) ranges.low.push(num);
+                    else if (num >= 17 && num <= 32) ranges.mid.push(num);
+                    else if (num >= 33 && num <= 49) ranges.high.push(num);
+                });
+
+                picked.pus
