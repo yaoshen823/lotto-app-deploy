@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>大樂透Firestore跨平台部署版</title>
+    <title>大樂透穩定啟動部署版</title>
     <!-- 載入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- 載入 SheetJS (用於 Excel 檔案 I/O) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     
     <script type="module">
-        // 跨平台修正：這裡必須從 CDN 載入 Firebase 模組
+        // 模組化 Firebase 載入
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, query, orderBy, onSnapshot, setDoc, doc, writeBatch, getDocs, limit, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
@@ -23,10 +23,10 @@
                         sans: ['Inter', 'Noto Sans TC', 'sans-serif'],
                     },
                     colors: {
-                        'primary': '#DC2626', // Red
-                        'secondary': '#FACC15', // Yellow
-                        'dark-bg': '#1F2937', // Dark Slate
-                        'card-bg': '#374151', // Slightly Lighter Slate
+                        'primary': '#DC2626', 
+                        'secondary': '#FACC15', 
+                        'dark-bg': '#1F2937', 
+                        'card-bg': '#374151', 
                     }
                 }
             }
@@ -43,7 +43,7 @@
         // Firestore 路徑
         let COLLECTION_PATH = '';
 
-        // 初始數據集 (78 筆 2025 年紀錄，格式為 MM/DD)
+        // 初始數據集 (78 筆 2025 年紀錄)
         const initialLottoData = [
             {"drawId": "114000001", "date": "01/03", "main": [6, 9, 15, 29, 30, 48], "special": 23},
             {"drawId": "114000002", "date": "01/07", "main": [1, 8, 20, 26, 29, 35], "special": 19},
@@ -63,6 +63,826 @@
             {"drawId": "114000016", "date": "02/25", "main": [10, 20, 27, 32, 41, 44], "special": 47},
             {"drawId": "114000017", "date": "02/28", "main": [15, 23, 26, 30, 40, 44], "special": 1},
             {"drawId": "114000018", "date": "03/03", "main": [7, 8, 11, 18, 34, 49], "special": 15},
+            {"drawId": "114000019", "date": "03/06", "main": [4, 15, 21, 23, 30, 42], "special": 32},
+            {"drawId": "114000020", "date": "03/10", "main": [1, 12, 16, 21, 37, 40], "special": 47},
+            {"drawId": "114000021", "date": "03/13", "main": [3, 11, 25, 28, 33, 46], "special": 2},
+            {"drawId": "114000022", "date": "03/17", "main": [2, 10, 14, 25, 29, 39], "special": 38},
+            {"drawId": "114000023", "date": "03/20", "main": [5, 6, 22, 24, 31, 41], "special": 18},
+            {"drawId": "114000024", "date": "03/24", "main": [10, 13, 26, 29, 32, 42], "special": 14},
+            {"drawId": "114000025", "date": "03/27", "main": [1, 5, 18, 22, 38, 48], "special": 44},
+            {"drawId": "114000026", "date": "03/31", "main": [13, 27, 33, 39, 45, 46], "special": 19},
+            {"drawId": "114000027", "date": "04/04", "main": [7, 20, 29, 40, 43, 47], "special": 28},
+            {"drawId": "114000028", "date": "04/08", "main": [10, 26, 33, 39, 45, 46], "special": 19},
+            {"drawId": "114000029", "date": "04/11", "main": [6, 10, 11, 17, 23, 32], "special": 27},
+            {"drawId": "114000030", "date": "04/15", "main": [18, 28, 37, 41, 43, 46], "special": 11},
+            {"drawId": "114000031", "date": "04/18", "main": [2, 8, 15, 22, 29, 45], "special": 9},
+            {"drawId": "114000032", "date": "04/22", "main": [1, 6, 14, 19, 35, 49], "special": 8},
+            {"drawId": "114000033", "date": "04/25", "main": [20, 21, 24, 25, 31, 35], "special": 28},
+            {"drawId": "114000034", "date": "04/29", "main": [7, 11, 24, 26, 30, 42], "special": 37},
+            {"drawId": "114000035", "date": "05/02", "main": [2, 5, 39, 43, 45, 47], "special": 26},
+            {"drawId": "114000036", "date": "05/06", "main": [5, 8, 9, 25, 30, 45], "special": 31},
+            {"drawId": "114000037", "date": "05/09", "main": [15, 27, 33, 42, 48, 49], "special": 39},
+            {"drawId": "114000038", "date": "05/13", "main": [1, 23, 29, 41, 45, 49], "special": 24},
+            {"drawId": "114000039", "date": "05/16", "main": [13, 16, 22, 23, 34, 39], "special": 14},
+            {"drawId": "114000040", "date": "05/20", "main": [2, 11, 15, 26, 29, 48], "special": 31},
+            {"drawId": "114000041", "date": "05/23", "main": [1, 7, 11, 24, 44, 48], "special": 10},
+            {"drawId": "114000042", "date": "05/27", "main": [16, 17, 26, 29, 32, 40], "special": 10},
+            {"drawId": "114000043", "date": "05/30", "main": [3, 4, 13, 21, 38, 46], "special": 2},
+            {"drawId": "114000044", "date": "06/03", "main": [9, 24, 32, 40, 41, 49], "special": 27},
+            {"drawId": "114000045", "date": "06/06", "main": [11, 13, 15, 39, 42, 46], "special": 28},
+            {"drawId": "114000046", "date": "06/10", "main": [3, 5, 12, 16, 22, 48], "special": 30},
+            {"drawId": "114000047", "date": "06/13", "main": [1, 2, 10, 13, 20, 27], "special": 49},
+            {"drawId": "114000048", "date": "06/17", "main": [13, 20, 21, 26, 31, 44], "special": 28},
+            {"drawId": "114000049", "date": "06/20", "main": [4, 20, 31, 40, 42, 48], "special": 24},
+            {"drawId": "114000050", "date": "06/24", "main": [3, 8, 20, 37, 45, 49], "special": 21},
+            {"drawId": "114000051", "date": "06/27", "main": [4, 8, 9, 14, 21, 39], "special": 37},
+            {"drawId": "114000052", "date": "07/01", "main": [8, 9, 21, 25, 33, 34], "special": 2},
+            {"drawId": "114000053", "date": "07/04", "main": [5, 13, 15, 18, 33, 37], "special": 45},
+            {"drawId": "114000054", "date": "07/08", "main": [6, 8, 12, 14, 25, 35], "special": 49},
+            {"drawId": "114000055", "date": "07/11", "main": [15, 16, 26, 34, 48, 49], "special": 46},
+            {"drawId": "114000056", "date": "07/15", "main": [32, 33, 41, 45, 46, 49], "special": 10},
+            {"drawId": "114000057", "date": "07/18", "main": [2, 25, 36, 37, 38, 46], "special": 24},
+            {"drawId": "114000058", "date": "07/22", "main": [5, 17, 19, 26, 27, 39], "special": 10},
+            {"drawId": "114000059", "date": "07/25", "main": [2, 4, 23, 35, 41, 47], "special": 6},
+            {"drawId": "114000060", "date": "07/29", "main": [2, 5, 14, 19, 36, 45], "special": 43},
+            {"drawId": "114000061", "date": "08/01", "main": [4, 14, 19, 28, 40, 41], "special": 31},
+            {"drawId": "114000062", "date": "08/05", "main": [1, 20, 34, 36, 37, 40], "special": 3},
+            {"drawId": "114000063", "date": "08/08", "main": [11, 16, 17, 21, 24, 29], "special": 34},
+            {"drawId": "114000064", "date": "08/12", "main": [6, 7, 15, 22, 37, 42], "special": 36},
+            {"drawId": "114000065", "date": "08/15", "main": [3, 5, 7, 15, 17, 47], "special": 34},
+            {"drawId": "114000066", "date": "08/19", "main": [2, 23, 25, 33, 41, 46], "special": 22},
+            {"drawId": "114000067", "date": "08/22", "main": [23, 33, 38, 43, 45, 47], "special": 36},
+            {"drawId": "114000068", "date": "08/26", "main": [3, 6, 22, 32, 35, 39], "special": 27},
+            {"drawId": "114000069", "date": "08/29", "main": [13, 20, 25, 27, 28, 32], "special": 2},
+            {"drawId": "114000070", "date": "09/02", "main": [2, 6, 9, 19, 20, 30], "special": 25},
+            {"drawId": "114000071", "date": "09/05", "main": [10, 13, 14, 17, 19, 29], "special": 40},
+            {"drawId": "114000072", "date": "09/09", "main": [12, 20, 25, 26, 40, 45], "special": 34},
+            {"drawId": "114000073", "date": "09/12", "main": [2, 3, 4, 11, 15, 41], "special": 26},
+            {"drawId": "114000074", "date": "09/16", "main": [7, 17, 18, 22, 25, 47], "special": 38},
+            {"drawId": "114000075", "date": "09/19", "main": [14, 17, 26, 36, 38, 41], "special": 8},
+            {"drawId": "114000076", "date": "09/23", "main": [5, 14, 22, 25, 27, 45], "special": 3},
+            {"drawId": "114000077", "date": "09/26", "main": [1, 2, 25, 29, 41, 49], "special": 35},
+            {"drawId": "114000078", "date": "09/30", "main": [19, 20, 22, 32, 36, 42], "special": 35}
+        ];
+        
+        // --- 設定您自己的 Firebase Config ---
+        // !!! WARNING !!! 
+        // 為了在外部平台運行，您必須替換下面的 YOUR_FIREBASE_CONFIG
+        // 如果您已經有一個 Firebase 專案，請將您的專案配置貼在這裡。
+        // 如果您沒有，您需要先建立一個 Firebase 專案，並取得 Web App 的設定。
+        const EXTERNAL_FIREBASE_CONFIG = {
+            apiKey: "AIzaSyC0GlNeFeV5_R05imC1OWmyNdP1OR2c6MI",
+            authDomain: "lotto-analyzer-e424e.firebaseapp.com",
+            projectId: "lotto-analyzer-e424e",
+            storageBucket: "lotto-analyzer-e424e.firebasestorage.app",
+            messagingSenderId: "932809120947",
+            appId: "1:932809120947:web:b2dc105adff390c31ba4c6",
+            measurementId: "G-PESKZ6YGT1"
+        };
+        
+        // --- 核心初始化流程 (已修改為跨平台兼容) ---
+
+        async function initializeFirebase() {
+            // 確保錯誤訊息 div 存在
+            const errorDisplay = document.getElementById('error-display');
+            const loadingIndicator = document.getElementById('loading-indicator');
+            const mainContent = document.getElementById('main-content');
+            
+            errorDisplay.classList.add('hidden');
+
+            try {
+                let config = EXTERNAL_FIREBASE_CONFIG;
+                let appIdForPath = config.projectId || 'external-app';
+
+                // 1. 環境檢查與配置載入
+                if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                    // Canvas 環境
+                    config = JSON.parse(__firebase_config);
+                    appIdForPath = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                } else if (config.apiKey === "YOUR_FIREBASE_API_KEY") {
+                    // 外部環境但配置未修改
+                    throw new Error("配置錯誤：請將程式碼中的 'YOUR_FIREBASE_API_KEY' 替換為您個人的 Firebase 專案配置。");
+                } 
+
+                if (!config || !config.apiKey) {
+                    throw new Error("Firebase configuration is missing or invalid.");
+                }
+
+                // 2. 初始化 Firebase 服務
+                const app = initializeApp(config);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                setLogLevel('debug');
+                COLLECTION_PATH = `artifacts/${appIdForPath}/public/data/lotto_draws`;
+                
+                // 3. 身份驗證 (強制匿名登入或使用 Token)
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth); 
+                }
+
+                userId = auth.currentUser?.uid || 'anonymous';
+                isAuthReady = true;
+
+                // 4. 檢查並寫入初始數據
+                await seedInitialData();
+
+                // 5. 建立實時監聽
+                setupRealtimeListener();
+                
+                // 6. 設置事件監聽器 (確保只設置一次)
+                document.getElementById('add-result-form').addEventListener('submit', handleAddResult);
+                document.getElementById('export-data-btn').addEventListener('click', exportData);
+                document.getElementById('import-file-input').addEventListener('change', importData);
+                
+                // 7. 顯示 UI
+                loadingIndicator.classList.add('hidden');
+                mainContent.classList.remove('hidden');
+                document.getElementById('user-id-display').textContent = `User ID: ${userId} (Collection: ${COLLECTION_PATH})`;
+
+            } catch (error) {
+                console.error("Firebase 啟動失敗:", error);
+                loadingIndicator.classList.add('hidden');
+                mainContent.classList.add('hidden');
+                
+                errorDisplay.innerHTML = `
+                    <div class="p-6 rounded-xl shadow-2xl bg-red-900/40 border-l-4 border-red-500 max-w-xl mx-auto mt-20">
+                        <p class="text-xl font-bold text-red-300">❌ 應用程式啟動失敗</p>
+                        <p class="text-sm mt-2 text-red-200">錯誤訊息: ${error.message}</p>
+                        <p class="text-sm mt-4 text-yellow-300">
+                           <span class="font-bold">部署提示:</span> 
+                           如果網頁一片空白，請務必檢查：
+                           <ul class="list-disc list-inside mt-2 ml-4 space-y-1">
+                               <li>是否在程式碼中替換了您的 Firebase <code class="bg-gray-700 p-1 rounded">EXTERNAL_FIREBASE_CONFIG</code>。</li>
+                               <li>Firebase 專案是否啟用了 **匿名登入 (Anonymous Sign-In)**。</li>
+                               <li>Firestore 安全規則是否允許匿名用戶讀寫。</li>
+                           </ul>
+                        </p>
+                    </div>`;
+                errorDisplay.classList.remove('hidden');
+            }
+        }
+        
+        // ... (其他函數保持不變)
+        async function seedInitialData() {
+            try {
+                if (!db) return;
+                const q = query(collection(db, COLLECTION_PATH), limit(1));
+                const snapshot = await getDocs(q);
+
+                if (snapshot.empty) {
+                    const batch = writeBatch(db);
+                    let counter = 0;
+                    initialLottoData.forEach(record => {
+                        const docRef = doc(db, COLLECTION_PATH, record.drawId);
+                        batch.set(docRef, {
+                            ...record,
+                            date: record.date.toString().trim(), 
+                            timestamp: serverTimestamp() 
+                        });
+                        counter++;
+                    });
+                    await batch.commit();
+                }
+            } catch (error) {
+                console.error("寫入初始數據失敗:", error);
+            }
+        }
+
+
+        function setupRealtimeListener() {
+            unsubscribe(); 
+            
+            if (!db || !isAuthReady) return;
+            
+            const q = query(collection(db, COLLECTION_PATH), orderBy('drawId', 'desc'));
+
+            unsubscribe = onSnapshot(q, (snapshot) => {
+                const records = [];
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    records.push({
+                        ...data,
+                        drawId: doc.id, 
+                    });
+                });
+                dataStore = records;
+                processAndRenderData(dataStore);
+                
+            }, (error) => {
+                console.error("實時監聽錯誤:", error);
+                // 即使監聽失敗，也嘗試渲染當前數據
+                document.getElementById('form-message').textContent = `❌ 實時數據更新失敗: ${error.message}`;
+                document.getElementById('form-message').classList.remove('hidden', 'text-green-500', 'bg-green-900/50');
+                document.getElementById('form-message').classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
+            });
+        }
+
+        // --- 核心分析邏輯 (保持不變) ---
+
+        function processAndRenderData(records) {
+             if (records.length === 0) {
+                document.getElementById('prediction-results').innerHTML = '<p class="text-center text-gray-400 p-4">無歷史紀錄，無法進行分析。</p>';
+                document.getElementById('freq-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
+                document.getElementById('weighted-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
+                document.getElementById('cooccurrence-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
+                document.getElementById('history-table').innerHTML = '<tr><td colspan="4" class="text-center py-4 text-gray-500">尚無開獎紀錄</td></tr>';
+                return;
+            }
+
+            const freqMap = new Map();
+            const weightedFreqMap = new Map();
+            const gapMap = new Map();
+            const cooccurrenceMap = new Map();
+            const numRange = Array.from({ length: 49 }, (_, i) => i + 1);
+            let drawIndex = 0; 
+
+            numRange.forEach(n => {
+                freqMap.set(n, 0);
+                weightedFreqMap.set(n, 0);
+                gapMap.set(n, records.length); 
+            });
+
+            for (const record of records) {
+                if (!record.main || !Array.isArray(record.main) || record.main.length !== 6 || isNaN(record.special)) continue;
+
+                const allNumbers = [...record.main, record.special];
+                const mainNumbers = record.main.slice().sort((a, b) => a - b);
+                
+                const weight = (records.length - drawIndex) / records.length; 
+
+                for (const num of allNumbers) {
+                    freqMap.set(num, (freqMap.get(num) || 0) + 1);
+                    
+                    if (record.main.includes(num)) {
+                        weightedFreqMap.set(num, weightedFreqMap.get(num) + weight);
+                    }
+
+                    if (gapMap.get(num) === records.length) {
+                        gapMap.set(num, drawIndex);
+                    }
+                }
+
+                for (let i = 0; i < mainNumbers.length; i++) {
+                    for (let j = i + 1; j < mainNumbers.length; j++) {
+                        const pair = `${mainNumbers[i].toString().padStart(2, '0')},${mainNumbers[j].toString().padStart(2, '0')}`;
+                        cooccurrenceMap.set(pair, (cooccurrenceMap.get(pair) || 0) + 1);
+                    }
+                }
+
+                drawIndex++;
+            }
+            
+            if (drawIndex === 0) {
+                 document.getElementById('prediction-results').innerHTML = '<p class="text-center text-red-400 p-4">所有紀錄皆無效或格式錯誤，無法進行分析。</p>';
+                return;
+            }
+
+
+            const sortedFreq = Array.from(freqMap.entries()).filter(([num]) => num <= 49 && freqMap.get(num) > 0).sort((a, b) => b[1] - a[1]);
+            const sortedWeighted = Array.from(weightedFreqMap.entries()).filter(([num]) => num <= 49 && weightedFreqMap.get(num) > 0).sort((a, b) => b[1] - a[1]);
+            const sortedCooccurrence = Array.from(cooccurrenceMap.entries()).sort((a, b) => b[1] - a[1]);
+            const sortedGap = Array.from(gapMap.entries()).filter(([num]) => num <= 49).sort((a, b) => b[1] - a[1]);
+
+            const predictions = generatePredictions(sortedWeighted, sortedFreq, sortedGap);
+            renderStats(records, sortedFreq.slice(0, 10), sortedWeighted.slice(0, 10), sortedCooccurrence.slice(0, 10), predictions);
+        }
+        
+        function generatePredictions(sortedWeighted, sortedFreq, sortedGap) {
+            const safePick = (sourceArray, existingSet, n) => {
+                const picked = [];
+                const localSet = new Set(existingSet);
+                let available = sourceArray.map(item => item[0]).filter(num => !localSet.has(num));
+
+                const pickFromRange = (arr, count) => arr.sort(() => 0.5 - Math.random()).slice(0, count);
+
+                const ranges = { low: [], mid: [], high: [] };
+                available.forEach(num => {
+                    if (num >= 1 && num <= 16) ranges.low.push(num);
+                    else if (num >= 17 && num <= 32) ranges.mid.push(num);
+                    else if (num >= 33 && num <= 49) ranges.high.push(num);
+                });
+
+                picked.push(...pickFromRange(ranges.low, Math.min(2, ranges.low.length)));
+                picked.push(...pickFromRange(ranges.mid, Math.min(2, ranges.mid.length)));
+                picked.push(...pickFromRange(ranges.high, Math.min(2, ranges.high.length)));
+                
+                const needed = n - picked.length;
+                if (needed > 0) {
+                     const remaining = available.filter(num => !picked.includes(num));
+                     picked.push(...remaining.slice(0, needed));
+                }
+
+                return picked.slice(0, n);
+            };
+
+            const generateSpecialPicks = (mainNumbers) => {
+                const mainSet = new Set(mainNumbers);
+                const candidates = sortedFreq
+                    .slice(0, 15) 
+                    .map(([num]) => num)
+                    .filter(num => num <= 49 && !mainSet.has(num))
+                    .sort(() => 0.5 - Math.random());
+
+                const specialPicks = candidates.slice(0, 3).map(n => n.toString().padStart(2, '0'));
+                
+                while (specialPicks.length < 3) {
+                    const rand = Math.floor(Math.random() * 49) + 1;
+                    if (!mainSet.has(rand) && !specialPicks.includes(rand.toString().padStart(2, '0'))) {
+                        specialPicks.push(rand.toString().padStart(2, '0'));
+                    }
+                }
+                return specialPicks.slice(0, 3).join(', ');
+            }
+
+            let set1 = safePick(sortedWeighted, new Set(), 6, false);
+            set1 = set1.sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
+            const special1 = generateSpecialPicks(set1.map(Number));
+
+            const hotCandidates = sortedWeighted.slice(0, 10);
+            const coldCandidates = sortedGap.slice(0, 10);
+            
+            const top3Hot = safePick(hotCandidates, new Set(), 3, false);
+            const top3Cold = safePick(coldCandidates, new Set(top3Hot), 3, true);
+            
+            let set2 = [...top3Hot, ...top3Cold];
+            
+            while (set2.length < 6) {
+                const rand = Math.floor(Math.random() * 49) + 1;
+                if (!set2.includes(rand)) {
+                    set2.push(rand);
+                }
+            }
+
+            set2 = set2.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
+            const special2 = generateSpecialPicks(set2.map(Number));
+
+
+            return [
+                {
+                    name: "策略一：近期熱門主導 (穩健型)",
+                    numbers: set1.join(', '),
+                    special: special1,
+                    basis: "基於近端加權頻率排名前列的號碼組合，側重捕捉短期內活躍的號碼。",
+                },
+                {
+                    name: "策略二：冷熱號均衡 (回補型)",
+                    numbers: set2.join(', '),
+                    special: special2,
+                    basis: "結合了加權熱門號 (3個) 與長間隔冷門號 (3個)，期望實現平衡回補。",
+                }
+            ];
+        }
+
+        function renderStats(records, sortedFreq, sortedWeighted, sortedCooccurrence, predictions) {
+            document.getElementById('freq-table').innerHTML = sortedFreq.map(([num, count]) => `
+                <div class="flex justify-between items-center p-2 border-b border-card-bg/50">
+                    <span class="text-lg font-bold w-1/3 text-secondary">${num.toString().padStart(2, '0')}</span>
+                    <span class="w-2/3 text-right">${count} 次</span>
+                </div>
+            `).join('');
+
+            document.getElementById('weighted-table').innerHTML = sortedWeighted.map(([num, score]) => `
+                <div class="flex justify-between items-center p-2 border-b border-card-bg/50">
+                    <span class="text-lg font-bold w-1/3 text-primary">${num.toString().padStart(2, '0')}</span>
+                    <span class="w-2/3 text-right">${score.toFixed(2)} 分</span>
+                </div>
+            `).join('');
+            
+            document.getElementById('cooccurrence-table').innerHTML = sortedCooccurrence.map(([pair, count]) => `
+                <div class="flex justify-between items-center p-2 border-b border-card-bg/50">
+                    <span class="text-lg font-bold w-1/3 text-secondary">${pair}</span>
+                    <span class="w-2/3 text-right">${count} 次</span>
+                </div>
+            `).join('');
+
+            document.getElementById('prediction-results').innerHTML = predictions.map(p => `
+                <div class="bg-card-bg p-4 rounded-xl shadow-lg mb-4 border-l-4 border-primary">
+                    <h3 class="text-xl font-bold mb-3 text-primary">${p.name}</h3>
+                    <div class="flex flex-wrap gap-2 mb-3">
+                        ${p.numbers.split(', ').map(n => `<span class="lotto-ball main">${n}</span>`).join('')}
+                    </div>
+                    <p class="text-gray-300 text-sm mb-2">${p.basis}</p>
+                    <div class="flex items-center mt-3">
+                        <span class="text-sm mr-2 text-secondary">特別號建議:</span>
+                        ${p.special.split(', ').map(n => `<span class="lotto-ball special">${n}</span>`).join('')}
+                    </div>
+                </div>
+            `).join('');
+            
+            // 歷史紀錄表格呈現
+            document.getElementById('history-table').innerHTML = records.map(r => `
+                <tr class="border-b border-card-bg/50 hover:bg-card-bg/70">
+                    <td class="px-4 py-2 text-primary text-sm font-semibold">${r.drawId || 'N/A'}</td>
+                    <td class="px-4 py-2 text-secondary">${r.date}</td>
+                    <td class="px-4 py-2 text-center text-gray-200">${r.main.map(n => n.toString().padStart(2, '0')).join(', ')}</td>
+                    <td class="px-4 py-2 text-center">
+                        <span class="lotto-ball special">${r.special.toString().padStart(2, '0')}</span>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        // --- Firestore 寫入與 I/O 處理 (與前版相同) ---
+        
+        async function writeRecordToFirestore(record) {
+            if (!db) throw new Error("Firestore 尚未初始化或權限不足。");
+            
+            const docRef = doc(db, COLLECTION_PATH, record.drawId);
+            
+            await setDoc(docRef, {
+                drawId: record.drawId,
+                date: record.date,
+                main: record.main,
+                special: record.special,
+                timestamp: serverTimestamp() 
+            });
+        }
+
+        async function handleAddResult(e) {
+            e.preventDefault();
+            const messageEl = document.getElementById('form-message');
+            messageEl.classList.remove('hidden');
+            messageEl.classList.remove('text-red-500', 'bg-red-900/50', 'text-yellow-500', 'bg-yellow-900/50', 'text-green-500', 'bg-green-900/50', 'p-2', 'rounded-lg');
+            
+            const drawIdInput = document.getElementById('draw-id').value.trim(); 
+            const dateInput = document.getElementById('draw-date').value; 
+            const mainInput = document.getElementById('main-numbers').value;
+            const specialInput = document.getElementById('special-number').value;
+
+            if (!drawIdInput) {
+                 messageEl.textContent = '❌ 請輸入「期別」欄位。';
+                messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
+                return;
+            }
+
+            const mainNumbers = mainInput.split(/[,\s]+/) 
+                .map(s => parseInt(s.trim()))
+                .filter(n => !isNaN(n) && n >= 1 && n <= 49); 
+            const specialNumber = parseInt(specialInput.trim());
+
+            const allNums = [...mainNumbers, specialNumber];
+            if (!dateInput || mainNumbers.length !== 6 || isNaN(specialNumber) || mainNumbers.includes(specialNumber) || 
+                (new Set(allNums)).size !== 7 || allNums.some(n => n < 1 || n > 49 || isNaN(n))) {
+                messageEl.textContent = '❌ 請檢查輸入：日期、6個主號（不重複）和1個特別號（不與主號重複），且號碼介於 01-49。';
+                messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
+                return;
+            }
+
+            try {
+                const isExistByDrawId = dataStore.some(record => record.drawId === drawIdInput);
+                if (isExistByDrawId) {
+                    messageEl.textContent = `❌ 錯誤：「期別」 ${drawIdInput} 的紀錄已存在。`;
+                    messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
+                    return;
+                }
+                
+                // --- 日期格式修正：將 YYYY-MM-DD 轉為 MM/DD ---
+                const dateParts = dateInput.split('-');
+                const docDate = `${dateParts[1].padStart(2, '0')}/${dateParts[2].padStart(2, '0')}`;
+                
+                const newRecord = {
+                    drawId: drawIdInput,
+                    date: docDate, 
+                    main: mainNumbers.sort((a, b) => a - b),
+                    special: specialNumber
+                };
+
+                await writeRecordToFirestore(newRecord);
+                
+                messageEl.textContent = `✅ 期別 ${drawIdInput} 紀錄新增成功，分析數據已自動更新！`;
+                messageEl.classList.add('text-green-500', 'p-2', 'rounded-lg', 'bg-green-900/50');
+                e.target.reset(); 
+            } catch (error) {
+                console.error("寫入 Firestore 失敗: ", error);
+                messageEl.textContent = `❌ 新增紀錄失敗 (Firestore 錯誤): ${error.message}. 請檢查您的 Firebase 安全規則是否允許寫入。`;
+                messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
+            }
+        }
+        
+        
+        function exportData() {
+            const dataForExcel = dataStore.map(record => ({
+                '期別': record.drawId || '', 
+                '日期': record.date, 
+                '主號': record.main.map(n => n.toString().padStart(2, '0')).join(', '),
+                '特別號': record.special.toString().padStart(2, '0')
+            }));
+
+            const ws = XLSX.utils.json_to_sheet(dataForExcel);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "大樂透紀錄");
+
+            const filename = '大樂透歷史紀錄_Firestore.xlsx';
+            XLSX.writeFile(wb, filename);
+
+            const messageEl = document.getElementById('form-message');
+            messageEl.textContent = `✅ 資料已匯出為 ${filename} 檔案！`;
+            messageEl.classList.remove('hidden', 'text-red-500', 'bg-red-900/50', 'text-yellow-500', 'bg-yellow-900/50');
+            messageEl.classList.add('text-green-500', 'p-2', 'rounded-lg', 'bg-green-900/50');
+        }
+
+        function importData(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            const messageEl = document.getElementById('form-message');
+            messageEl.classList.remove('hidden');
+            messageEl.classList.remove('text-red-500', 'bg-red-900/50', 'text-yellow-500', 'bg-yellow-900/50', 'text-green-500', 'bg-green-900/50', 'p-2', 'rounded-lg');
+
+
+            reader.onload = async function(event) {
+                let newRecords = [];
+                try {
+                    const data = new Uint8Array(event.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const importedJson = XLSX.utils.sheet_to_json(sheet);
+                    
+                    if (!Array.isArray(importedJson) || importedJson.length === 0) {
+                        throw new Error("匯入的檔案無有效數據。");
+                    }
+                    
+                    importedJson.forEach((row, index) => {
+                        const drawId = row['期別'] ? row['期別'].toString() : null; 
+                        const special = parseInt(row['特別號']);
+                        const dateRaw = row['開獎日期'] || row['日期']; 
+                        
+                        if (!drawId || !dateRaw || isNaN(special)) {
+                            return; 
+                        }
+                        
+                        let mainNums = [];
+                        if (row['主號']) {
+                            mainNums = row['主號'].toString().split(/[,\s]+/) 
+                                .map(s => parseInt(s.trim()))
+                                .filter(n => !isNaN(n) && n >= 1 && n <= 49); 
+                        } else {
+                            for (let i = 1; i <= 6; i++) {
+                                const numKey = `獎號${i}`;
+                                const num = parseInt(row[numKey]);
+                                if (!isNaN(num) && num >= 1 && num <= 49) {
+                                    mainNums.push(num);
+                                }
+                            }
+                        }
+                        
+                        if (mainNums.length !== 6 || mainNums.includes(special) || (new Set(mainNums)).size !== 6) {
+                             throw new Error(`第 ${index + 1} 行數據格式錯誤：主號數量或規則不符。`);
+                        }
+                        
+                        let formattedDate = dateRaw.toString();
+                        if (typeof dateRaw === 'number') {
+                            const date = XLSX.SSF.parse_date_code(dateRaw);
+                            formattedDate = `${(date.m).toString().padStart(2, '0')}/${(date.d).toString().padStart(2, '0')}`;
+                        } else {
+                            const dateParts = formattedDate.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+                            if (dateParts) {
+                                formattedDate = `${dateParts[2].padStart(2, '0')}/${dateParts[3].padStart(2, '0')}`;
+                            } else {
+                                formattedDate = formattedDate.replace(/\//g, '/').replace(/-/g, '/');
+                            }
+                        }
+
+
+                        newRecords.push({
+                            drawId: drawId,
+                            date: formattedDate, 
+                            main: mainNums.sort((a, b) => a - b),
+                            special: special
+                        });
+                    });
+
+                    if (newRecords.length === 0) {
+                        throw new Error("匯入檔案中找不到有效且格式正確的開獎紀錄。請檢查標頭名稱是否正確。");
+                    }
+
+                    const batch = writeBatch(db);
+                    let importedCount = 0;
+                    
+                    for (const record of newRecords) {
+                        if (!dataStore.some(r => r.drawId === record.drawId)) {
+                             const docRef = doc(db, COLLECTION_PATH, record.drawId);
+                             batch.set(docRef, {
+                                ...record,
+                                timestamp: serverTimestamp() 
+                             });
+                             importedCount++;
+                        }
+                    }
+
+                    if (importedCount > 0) {
+                        await batch.commit();
+                        messageEl.textContent = `✅ 成功匯入 ${importedCount} 筆新紀錄！分析數據已自動更新。`;
+                        messageEl.classList.add('text-green-500', 'p-2', 'rounded-lg', 'bg-green-900/50');
+                    } else {
+                        messageEl.textContent = `⚠️ 警告：所有紀錄的期別都已存在於數據庫中，未寫入任何新紀錄。`;
+                        messageEl.classList.add('text-yellow-500', 'p-2', 'rounded-lg', 'bg-yellow-900/50');
+                    }
+
+                } catch (error) {
+                    console.error("Import failed:", error);
+                    messageEl.textContent = `❌ 匯入失敗 (寫入錯誤)：${error.message || '請確保檔案格式正確。'}`;
+                    messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
+                } finally {
+                    e.target.value = ''; 
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+        
+        // --- 啟動程序 ---
+        document.addEventListener('DOMContentLoaded', initializeFirebase);
+    </script>
+    <style>
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #374151; }
+        ::-webkit-scrollbar-thumb { background: #DC2626; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #B91C1C; }
+        /* Lotto ball styling */
+        .lotto-ball {
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            font-weight: bold;
+            color: #1F2937;
+            font-size: 16px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.5);
+            border: 2px solid;
+            transition: transform 0.2s;
+        }
+        .lotto-ball.main {
+            background: linear-gradient(145deg, #FFEFBA, #FFD700); /* Golden color for main */
+            border-color: #DAA520;
+        }
+        .lotto-ball.special {
+            background: linear-gradient(145deg, #FF6B6B, #DC2626); /* Red color for special */
+            color: white;
+            border-color: #991B1B;
+        }
+        .lotto-ball:hover {
+            transform: scale(1.05);
+        }
+        @media (max-width: 768px) {
+            .lotto-ball {
+                width: 30px;
+                height: 30px;
+                font-size: 14px;
+            }
+        }
+    </style>
+</head>
+<body class="bg-dark-bg text-gray-100 min-h-screen p-4 font-sans antialiased">
+
+    <!-- 錯誤顯示區塊 (新的，獨立於 main-content) -->
+    <div id="error-display" class="hidden"></div>
+    
+    <!-- 頁面結構 -->
+    <div class="max-w-7xl mx-auto py-6">
+
+        <header class="text-center mb-8 border-b border-primary pb-4">
+            <h1 class="text-4xl md:text-5xl font-extrabold text-white tracking-tight">大樂透分析顧問 (穩定部署版) 🔮</h1>
+            <p class="text-secondary mt-2 text-lg">歷史數據統計與下一期候選號碼建議</p>
+        </header>
+
+        <!-- 載入指示器 -->
+        <div id="loading-indicator" class="flex flex-col justify-center items-center h-64">
+            <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-primary"></div>
+            <p class="text-white ml-4 text-xl mt-4">Firebase 資料庫連接中，請稍候...</p>
+        </div>
+
+        <!-- 主要內容區塊 -->
+        <div id="main-content" class="hidden">
+            <p id="user-id-display" class="text-sm text-gray-500 mb-4 text-center"></p>
+
+            <!-- 部署提示 (僅供外部平台用戶閱讀) -->
+            <div class="bg-yellow-900/40 border-l-4 border-yellow-400 p-4 mb-8 rounded-lg text-yellow-100">
+                <p class="font-bold text-lg">📢 跨平台部署提示 (務必檢查):</p>
+                <ul class="list-disc list-inside mt-2 text-sm space-y-1">
+                    <li>請確認您已在程式碼中替換 **`EXTERNAL_FIREBASE_CONFIG`** 變數。</li>
+                    <li>請確認 Firebase 專案已啟用 **匿名登入**，且 Firestore 規則允許匿名用戶讀寫。</li>
+                </ul>
+            </div>
+
+
+            <!-- 預測結果區塊 -->
+            <section class="mb-8">
+                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">🎯 兩組最有可能中獎號碼 (基於最新數據)</h2>
+                <div id="prediction-results" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Prediction results will be injected here -->
+                </div>
+                <p class="text-sm text-gray-400 mt-4 p-3 bg-card-bg rounded-lg">
+                    **風險聲明**：彩券本質為隨機獨立抽樣，各期號碼中獎機率相等，歷史開獎數據無法作為未來結果的預測依據。本報告僅為基於歷史資料的數據分析與組合建議，不構成任何投注保證，僅供娛樂參考。
+                </p>
+            </section>
+            
+            <!-- 數據輸入與 I/O 控制 -->
+            <section class="mb-8 p-6 bg-card-bg rounded-xl shadow-2xl border border-primary/30">
+                <h2 class="text-3xl font-bold text-white mb-4">✍️ 數據管理與更新 (Firestore 實時)</h2>
+                
+                <!-- I/O 按鈕 -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                    <div>
+                        <label for="import-file-input" class="block text-sm font-medium text-gray-300 mb-1">匯入數據 (XLSX/XLS 檔案)</label>
+                        <input type="file" id="import-file-input" accept=".xlsx,.xls" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-secondary file:text-dark-bg hover:file:bg-secondary/80">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-1 invisible md:visible">匯出當前數據</label>
+                        <button id="export-data-btn" class="w-full py-2 px-4 bg-primary hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md">
+                            匯出為 XLSX 檔案 (含 Firestore 紀錄)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 新增紀錄表單 -->
+                <h3 class="text-2xl font-semibold text-white border-t border-card-bg/50 pt-4 mb-4">新增開獎結果 (將直接寫入 Firestore)</h3>
+                <form id="add-result-form" class="grid grid-cols-1 md:grid-cols-5 gap-4">
+                    <div class="col-span-1">
+                        <label for="draw-id" class="block text-sm font-medium text-gray-300 mb-1">期別 (Draw ID) <span class="text-primary">*</span></label>
+                        <input type="text" id="draw-id" required placeholder="例如: 114000092" class="w-full p-2 rounded-lg bg-dark-bg border border-gray-600 text-white focus:ring-primary focus:border-primary">
+                    </div>
+                    <div class="col-span-1">
+                        <label for="draw-date" class="block text-sm font-medium text-gray-300 mb-1">開獎日期 (西元) <span class="text-primary">*</span></label>
+                        <input type="date" id="draw-date" required class="w-full p-2 rounded-lg bg-dark-bg border border-gray-600 text-white focus:ring-primary focus:border-primary">
+                    </div>
+                    <div class="col-span-2">
+                        <label for="main-numbers" class="block text-sm font-medium text-gray-300 mb-1">主號 (6個, 貼上空格或逗號分隔) <span class="text-primary">*</span></label>
+                        <input type="text" id="main-numbers" required placeholder="例如: 01 07 14 22 33 45" class="w-full p-2 rounded-lg bg-dark-bg border border-gray-600 text-white focus:ring-primary focus:border-primary">
+                    </div>
+                    <div class="col-span-1">
+                        <label for="special-number" class="block text-sm font-medium text-gray-300 mb-1">特別號 <span class="text-primary">*</span></label>
+                        <input type="number" id="special-number" min="1" max="49" required class="w-full p-2 rounded-lg bg-dark-bg border border-gray-600 text-white focus:ring-primary focus:border-primary">
+                    </div>
+                    <div class="md:col-span-5">
+                        <button type="submit" class="w-full py-2 px-4 bg-primary hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md transform hover:scale-[1.01]">
+                            新增並寫入 Firestore
+                        </button>
+                    </div>
+                </form>
+                <p id="form-message" class="mt-3 text-center hidden"></p>
+            </section>
+
+            <!-- 統計數據呈現 -->
+            <section class="mb-8">
+                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">📊 核心統計分析 (Top 10)</h2>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <!-- 總體頻率 -->
+                    <div class="bg-card-bg p-4 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold text-secondary mb-3">總體出號頻率</h3>
+                        <div id="freq-table" class="space-y-1">
+                            <!-- Freq data here -->
+                        </div>
+                    </div>
+                    <!-- 近期加權頻率 -->
+                    <div class="bg-card-bg p-4 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold text-primary mb-3">近期加權熱門號</h3>
+                        <div id="weighted-table" class="space-y-1">
+                            <!-- Weighted data here -->
+                        </div>
+                    </div>
+                    <!-- 高共現對 -->
+                    <div class="bg-card-bg p-4 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold text-secondary mb-3">高共現對 (主號)</h3>
+                        <div id="cooccurrence-table" class="space-y-1">
+                            <!-- Cooccurrence data here -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- 歷史紀錄 (增強呈現) -->
+            <section>
+                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">📜 歷史開獎紀錄 (Firestore 實時同步)</h2>
+                <div class="bg-card-bg rounded-xl shadow-lg overflow-x-auto max-h-96">
+                    <table class="min-w-full divide-y divide-gray-700">
+                        <thead class="bg-dark-bg sticky top-0">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-sm font-medium text-gray-300 uppercase tracking-wider">期別</th>
+                                <th class="px-4 py-3 text-left text-sm font-medium text-gray-300 uppercase tracking-wider">日期</th>
+                                <th class="px-4 py-3 text-center text-sm font-medium text-gray-300 uppercase tracking-wider">主號 (6個)</th>
+                                <th class="px-4 py-3 text-center text-sm font-medium text-gray-300 uppercase tracking-wider">特別號</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-table" class="divide-y divide-gray-700">
+                            <!-- History data will be injected here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+        </div>
+    </div>
+</body>
+</html>
+
             {"drawId": "114000019", "date": "03/06", "main": [4, 15, 21, 23, 30, 42], "special": 32},
             {"drawId": "114000020", "date": "03/10", "main": [1, 12, 16, 21, 37, 40], "special": 47},
             {"drawId": "114000021", "date": "03/13", "main": [3, 11, 25, 28, 33, 46], "special": 2},
