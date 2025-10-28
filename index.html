@@ -345,7 +345,7 @@
                 const picked = [];
                 const localSet = new Set(existingSet);
                 let available = sourceArray.map(item => item[0]).filter(num => !localSet.has(num));
-                 
+
                 const pickFromRange = (arr, count) => arr.sort(() => 0.5 - Math.random()).slice(0, count);
 
                 const ranges = { low: [], mid: [], high: [] };
