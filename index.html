@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>大樂透穩定啟動部署版</title>
+    <title>大樂透AI分析</title>
     <!-- 載入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- 載入 SheetJS (用於 Excel 檔案 I/O) -->
@@ -201,7 +201,7 @@
                 // 7. 顯示 UI
                 loadingIndicator.classList.add('hidden');
                 mainContent.classList.remove('hidden');
-                document.getElementById('user-id-display').textContent = `User ID: ${userId} (Collection: ${COLLECTION_PATH})`;
+                //document.getElementById('user-id-display').textContent = `User ID: ${userId} (Collection: ${COLLECTION_PATH})`;
 
             } catch (error) {
                 console.error("Firebase 啟動失敗:", error);
@@ -763,7 +763,7 @@
         <div id="main-content" class="hidden">
             <p id="user-id-display" class="text-sm text-gray-500 mb-4 text-center"></p>
 
-            <!-- 部署提示 (僅供外部平台用戶閱讀) -->
+            <!-- 部署提示 (僅供外部平台用戶閱讀) 
             <div class="bg-yellow-900/40 border-l-4 border-yellow-400 p-4 mb-8 rounded-lg text-yellow-100">
                 <p class="font-bold text-lg">📢 跨平台部署提示 (務必檢查):</p>
                 <ul class="list-disc list-inside mt-2 text-sm space-y-1">
@@ -771,7 +771,7 @@
                     <li>請確認 Firebase 專案已啟用 **匿名登入**，且 Firestore 規則允許匿名用戶讀寫。</li>
                 </ul>
             </div>
-
+            -->
 
             <!-- 預測結果區塊 -->
             <section class="mb-8">
