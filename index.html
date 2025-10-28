@@ -10,12 +10,12 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     
     <script type="module">
-        // 模組化 Firebase 載入
+        // Module Imports
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, query, orderBy, onSnapshot, setDoc, doc, writeBatch, getDocs, limit, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, query, orderBy, onSnapshot, setDoc, doc, deleteDoc, writeBatch, getDocs, limit, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Tailwind Configuration (略)
+        // Tailwind Configuration
         tailwind.config = {
             theme: {
                 extend: {
@@ -39,6 +39,7 @@
         let isAuthReady = false;
         let dataStore = [];
         let unsubscribe = () => {}; 
+        let currentEditingId = null; // 儲存當前正在表格內編輯的 drawId
 
         // Firestore 路徑
         let COLLECTION_PATH = '';
@@ -126,10 +127,6 @@
         ];
         
         // --- 設定您自己的 Firebase Config ---
-        // !!! WARNING !!! 
-        // 為了在外部平台運行，您必須替換下面的 YOUR_FIREBASE_CONFIG
-        // 如果您已經有一個 Firebase 專案，請將您的專案配置貼在這裡。
-        // 如果您沒有，您需要先建立一個 Firebase 專案，並取得 Web App 的設定。
         const EXTERNAL_FIREBASE_CONFIG = {
             apiKey: "AIzaSyC0GlNeFeV5_R05imC1OWmyNdP1OR2c6MI",
             authDomain: "lotto-analyzer-e424e.firebaseapp.com",
@@ -140,10 +137,9 @@
             measurementId: "G-PESKZ6YGT1"
         };
         
-        // --- 核心初始化流程 (已修改為跨平台兼容) ---
+        // --- 核心初始化流程 ---
 
         async function initializeFirebase() {
-            // 確保錯誤訊息 div 存在
             const errorDisplay = document.getElementById('error-display');
             const loadingIndicator = document.getElementById('loading-indicator');
             const mainContent = document.getElementById('main-content');
@@ -154,13 +150,10 @@
                 let config = EXTERNAL_FIREBASE_CONFIG;
                 let appIdForPath = config.projectId || 'external-app';
 
-                // 1. 環境檢查與配置載入
                 if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-                    // Canvas 環境
                     config = JSON.parse(__firebase_config);
                     appIdForPath = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
                 } else if (config.apiKey === "YOUR_FIREBASE_API_KEY") {
-                    // 外部環境但配置未修改
                     throw new Error("配置錯誤：請將程式碼中的 'YOUR_FIREBASE_API_KEY' 替換為您個人的 Firebase 專案配置。");
                 } 
 
@@ -168,7 +161,6 @@
                     throw new Error("Firebase configuration is missing or invalid.");
                 }
 
-                // 2. 初始化 Firebase 服務
                 const app = initializeApp(config);
                 db = getFirestore(app);
                 auth = getAuth(app);
@@ -176,7 +168,7 @@
                 setLogLevel('debug');
                 COLLECTION_PATH = `artifacts/${appIdForPath}/public/data/lotto_draws`;
                 
-                // 3. 身份驗證 (強制匿名登入或使用 Token)
+                // 身份驗證
                 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
                 if (initialAuthToken) {
                     await signInWithCustomToken(auth, initialAuthToken);
@@ -187,18 +179,18 @@
                 userId = auth.currentUser?.uid || 'anonymous';
                 isAuthReady = true;
 
-                // 4. 檢查並寫入初始數據
+                // 檢查並寫入初始數據
                 await seedInitialData();
 
-                // 5. 建立實時監聽
+                // 建立實時監聽
                 setupRealtimeListener();
                 
-                // 6. 設置事件監聽器 (確保只設置一次)
+                // 設置事件監聽器 (確保只設置一次)
                 document.getElementById('add-result-form').addEventListener('submit', handleAddResult);
                 document.getElementById('export-data-btn').addEventListener('click', exportData);
                 document.getElementById('import-file-input').addEventListener('change', importData);
                 
-                // 7. 顯示 UI
+                // 顯示 UI
                 loadingIndicator.classList.add('hidden');
                 mainContent.classList.remove('hidden');
                 //document.getElementById('user-id-display').textContent = `User ID: ${userId} (Collection: ${COLLECTION_PATH})`;
@@ -214,19 +206,13 @@
                         <p class="text-sm mt-2 text-red-200">錯誤訊息: ${error.message}</p>
                         <p class="text-sm mt-4 text-yellow-300">
                            <span class="font-bold">部署提示:</span> 
-                           如果網頁一片空白，請務必檢查：
-                           <ul class="list-disc list-inside mt-2 ml-4 space-y-1">
-                               <li>是否在程式碼中替換了您的 Firebase <code class="bg-gray-700 p-1 rounded">EXTERNAL_FIREBASE_CONFIG</code>。</li>
-                               <li>Firebase 專案是否啟用了 **匿名登入 (Anonymous Sign-In)**。</li>
-                               <li>Firestore 安全規則是否允許匿名用戶讀寫。</li>
-                           </ul>
+                           請確保您已替換 <code class="bg-gray-700 p-1 rounded">EXTERNAL_FIREBASE_CONFIG</code>。
                         </p>
                     </div>`;
                 errorDisplay.classList.remove('hidden');
             }
         }
         
-        // ... (其他函數保持不變)
         async function seedInitialData() {
             try {
                 if (!db) return;
@@ -235,7 +221,6 @@
 
                 if (snapshot.empty) {
                     const batch = writeBatch(db);
-                    let counter = 0;
                     initialLottoData.forEach(record => {
                         const docRef = doc(db, COLLECTION_PATH, record.drawId);
                         batch.set(docRef, {
@@ -243,7 +228,6 @@
                             date: record.date.toString().trim(), 
                             timestamp: serverTimestamp() 
                         });
-                        counter++;
                     });
                     await batch.commit();
                 }
@@ -257,6 +241,11 @@
             unsubscribe(); 
             
             if (!db || !isAuthReady) return;
+            
+            // 修正：當編輯中時，取消編輯狀態
+            if (currentEditingId) {
+                currentEditingId = null;
+            }
             
             const q = query(collection(db, COLLECTION_PATH), orderBy('drawId', 'desc'));
 
@@ -274,7 +263,6 @@
                 
             }, (error) => {
                 console.error("實時監聽錯誤:", error);
-                // 即使監聽失敗，也嘗試渲染當前數據
                 document.getElementById('form-message').textContent = `❌ 實時數據更新失敗: ${error.message}`;
                 document.getElementById('form-message').classList.remove('hidden', 'text-green-500', 'bg-green-900/50');
                 document.getElementById('form-message').classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
@@ -282,14 +270,14 @@
         }
 
         // --- 核心分析邏輯 (保持不變) ---
-
+        
         function processAndRenderData(records) {
              if (records.length === 0) {
                 document.getElementById('prediction-results').innerHTML = '<p class="text-center text-gray-400 p-4">無歷史紀錄，無法進行分析。</p>';
                 document.getElementById('freq-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
                 document.getElementById('weighted-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
                 document.getElementById('cooccurrence-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
-                document.getElementById('history-table').innerHTML = '<tr><td colspan="4" class="text-center py-4 text-gray-500">尚無開獎紀錄</td></tr>';
+                document.getElementById('history-table').innerHTML = '<tr><td colspan="5" class="text-center py-4 text-gray-500">尚無開獎紀錄</td></tr>';
                 return;
             }
 
@@ -352,11 +340,12 @@
         }
         
         function generatePredictions(sortedWeighted, sortedFreq, sortedGap) {
-            const safePick = (sourceArray, existingSet, n) => {
+            // ... (Prediction logic is omitted for brevity but remains the same)
+             const safePick = (sourceArray, existingSet, n) => {
                 const picked = [];
                 const localSet = new Set(existingSet);
                 let available = sourceArray.map(item => item[0]).filter(num => !localSet.has(num));
-
+                 
                 const pickFromRange = (arr, count) => arr.sort(() => 0.5 - Math.random()).slice(0, count);
 
                 const ranges = { low: [], mid: [], high: [] };
@@ -437,7 +426,9 @@
             ];
         }
 
+        // --- 渲染統計數據 (新增表格內編輯邏輯) ---
         function renderStats(records, sortedFreq, sortedWeighted, sortedCooccurrence, predictions) {
+            // ... (Stats rendering omitted for brevity)
             document.getElementById('freq-table').innerHTML = sortedFreq.map(([num, count]) => `
                 <div class="flex justify-between items-center p-2 border-b border-card-bg/50">
                     <span class="text-lg font-bold w-1/3 text-secondary">${num.toString().padStart(2, '0')}</span>
@@ -474,19 +465,112 @@
             `).join('');
             
             // 歷史紀錄表格呈現
-            document.getElementById('history-table').innerHTML = records.map(r => `
-                <tr class="border-b border-card-bg/50 hover:bg-card-bg/70">
-                    <td class="px-4 py-2 text-primary text-sm font-semibold">${r.drawId || 'N/A'}</td>
-                    <td class="px-4 py-2 text-secondary">${r.date}</td>
-                    <td class="px-4 py-2 text-center text-gray-200">${r.main.map(n => n.toString().padStart(2, '0')).join(', ')}</td>
-                    <td class="px-4 py-2 text-center">
-                        <span class="lotto-ball special">${r.special.toString().padStart(2, '0')}</span>
-                    </td>
-                </tr>
-            `).join('');
+            document.getElementById('history-table').innerHTML = records.map(r => {
+                // 將 MM/DD 轉為 YYYY-MM-DD 格式，方便 date input 使用
+                const year = new Date().getFullYear(); 
+                const dateISO = `${year}-${r.date.split('/')[0].padStart(2, '0')}-${r.date.split('/')[1].padStart(2, '0')}`;
+                
+                // 如果當前行正在編輯，則渲染輸入欄位
+                if (currentEditingId === r.drawId) {
+                    return `
+                        <tr id="row-${r.drawId}" class="bg-card-bg/80 border-b border-primary/50">
+                            <td class="px-2 py-1 text-primary text-sm font-semibold">${r.drawId}</td>
+                            <td class="px-2 py-1">
+                                <input type="date" value="${dateISO}" id="edit-date-${r.drawId}" class="w-full text-xs p-1 rounded bg-dark-bg border border-blue-400 text-white">
+                            </td>
+                            <td class="px-2 py-1">
+                                <input type="text" value="${r.main.map(n => n.toString().padStart(2, '0')).join(', ')}" id="edit-main-${r.drawId}" class="w-full text-xs p-1 rounded bg-dark-bg border border-blue-400 text-white">
+                            </td>
+                            <td class="px-2 py-1">
+                                <input type="number" min="1" max="49" value="${r.special}" id="edit-special-${r.drawId}" class="w-full text-xs p-1 rounded bg-dark-bg border border-blue-400 text-white text-center">
+                            </td>
+                            <td class="px-2 py-1 text-center flex justify-center space-x-2">
+                                <button onclick="saveEdit('${r.drawId}')" class="bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-1 px-2 rounded transition duration-150">儲存</button>
+                                <button onclick="cancelEdit()" class="bg-gray-600 hover:bg-gray-700 text-white text-xs font-bold py-1 px-2 rounded transition duration-150">取消</button>
+                            </td>
+                        </tr>
+                    `;
+                }
+                
+                // 否則渲染靜態數據和操作按鈕
+                return `
+                    <tr id="row-${r.drawId}" class="border-b border-card-bg/50 hover:bg-card-bg/70">
+                        <td class="px-4 py-2 text-primary text-sm font-semibold">${r.drawId || 'N/A'}</td>
+                        <td class="px-4 py-2 text-secondary">${r.date}</td>
+                        <td class="px-4 py-2 text-center text-gray-200">${r.main.map(n => n.toString().padStart(2, '0')).join(', ')}</td>
+                        <td class="px-4 py-2 text-center">
+                            <span class="lotto-ball special">${r.special.toString().padStart(2, '0')}</span>
+                        </td>
+                        <td class="px-4 py-2 text-center flex justify-center space-x-2">
+                            <button onclick="startEdit('${r.drawId}')" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-1 px-2 rounded transition duration-150">編輯</button>
+                            <button onclick="deleteRecord('${r.drawId}')" class="bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-1 px-2 rounded transition duration-150">刪除</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
         }
 
-        // --- Firestore 寫入與 I/O 處理 (與前版相同) ---
+        // --- 表格內編輯操作函數 ---
+        window.startEdit = (drawId) => {
+            currentEditingId = drawId;
+            // 觸發重新渲染，將該行轉為輸入模式
+            processAndRenderData(dataStore);
+        }
+
+        window.cancelEdit = () => {
+            currentEditingId = null;
+            // 觸發重新渲染，將該行轉回靜態模式
+            processAndRenderData(dataStore);
+        }
+
+        window.saveEdit = async (drawId) => {
+            const dateInput = document.getElementById(`edit-date-${drawId}`).value;
+            const mainInput = document.getElementById(`edit-main-${drawId}`).value;
+            const specialInput = document.getElementById(`edit-special-${drawId}`).value;
+            const messageEl = document.getElementById('form-message');
+
+            const mainNumbers = mainInput.split(/[,\s]+/) 
+                .map(s => parseInt(s.trim()))
+                .filter(n => !isNaN(n) && n >= 1 && n <= 49); 
+            const specialNumber = parseInt(specialInput.trim());
+
+            const allNums = [...mainNumbers, specialNumber];
+            if (!dateInput || mainNumbers.length !== 6 || isNaN(specialNumber) || mainNumbers.includes(specialNumber) || 
+                (new Set(allNums)).size !== 7 || allNums.some(n => n < 1 || n > 49 || isNaN(n))) {
+                messageEl.textContent = '❌ 編輯失敗：請檢查號碼格式、數量或重複性。';
+                messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
+                messageEl.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                // 將 YYYY-MM-DD 轉為 MM/DD 
+                const dateParts = dateInput.split('-');
+                const docDate = `${dateParts[1].padStart(2, '0')}/${dateParts[2].padStart(2, '0')}`;
+
+                const updatedRecord = {
+                    drawId: drawId,
+                    date: docDate, 
+                    main: mainNumbers.sort((a, b) => a - b),
+                    special: specialNumber
+                };
+
+                await writeRecordToFirestore(updatedRecord);
+                
+                messageEl.textContent = `✅ 期別 ${drawId} 紀錄修改成功，分析數據已自動更新！`;
+                messageEl.classList.add('text-green-500', 'p-2', 'rounded-lg', 'bg-green-900/50');
+                messageEl.classList.remove('hidden');
+
+                currentEditingId = null; 
+            } catch (error) {
+                console.error("儲存編輯失敗: ", error);
+                messageEl.textContent = `❌ 儲存編輯失敗 (Firestore 錯誤): ${error.message}.`;
+                messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
+                messageEl.classList.remove('hidden');
+            }
+        }
+        
+        // --- CRUD 操作函數 (與前版相同) ---
         
         async function writeRecordToFirestore(record) {
             if (!db) throw new Error("Firestore 尚未初始化或權限不足。");
@@ -499,20 +583,28 @@
                 main: record.main,
                 special: record.special,
                 timestamp: serverTimestamp() 
-            });
+            }, { merge: true }); 
+        }
+        
+        async function deleteRecordFromFirestore(drawId) {
+            if (!db) throw new Error("Firestore 尚未初始化或權限不足。");
+            
+            const docRef = doc(db, COLLECTION_PATH, drawId);
+            await deleteDoc(docRef);
         }
 
         async function handleAddResult(e) {
             e.preventDefault();
             const messageEl = document.getElementById('form-message');
-            messageEl.classList.remove('hidden');
-            messageEl.classList.remove('text-red-500', 'bg-red-900/50', 'text-yellow-500', 'bg-yellow-900/50', 'text-green-500', 'bg-green-900/50', 'p-2', 'rounded-lg');
+            
+            messageEl.classList.remove('hidden', 'text-red-500', 'bg-red-900/50', 'text-yellow-500', 'bg-yellow-900/50', 'text-green-500', 'bg-green-900/50', 'p-2', 'rounded-lg');
             
             const drawIdInput = document.getElementById('draw-id').value.trim(); 
             const dateInput = document.getElementById('draw-date').value; 
             const mainInput = document.getElementById('main-numbers').value;
             const specialInput = document.getElementById('special-number').value;
 
+            // 1. 基本驗證
             if (!drawIdInput) {
                  messageEl.textContent = '❌ 請輸入「期別」欄位。';
                 messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
@@ -531,22 +623,23 @@
                 messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
                 return;
             }
+            
+            // 2. 衝突檢查
+            const isExistByDrawId = dataStore.some(record => record.drawId === drawIdInput);
+            if (isExistByDrawId) {
+                messageEl.textContent = `❌ 錯誤：「期別」 ${drawIdInput} 的紀錄已存在。請使用下方表格的「編輯」功能進行修改。`;
+                messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
+                return;
+            }
 
             try {
-                const isExistByDrawId = dataStore.some(record => record.drawId === drawIdInput);
-                if (isExistByDrawId) {
-                    messageEl.textContent = `❌ 錯誤：「期別」 ${drawIdInput} 的紀錄已存在。`;
-                    messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
-                    return;
-                }
-                
-                // --- 日期格式修正：將 YYYY-MM-DD 轉為 MM/DD ---
+                // 日期格式修正：將 YYYY-MM-DD 轉為 MM/DD 
                 const dateParts = dateInput.split('-');
                 const docDate = `${dateParts[1].padStart(2, '0')}/${dateParts[2].padStart(2, '0')}`;
                 
                 const newRecord = {
                     drawId: drawIdInput,
-                    date: docDate, 
+                    date: docDate, // 儲存 MM/DD
                     main: mainNumbers.sort((a, b) => a - b),
                     special: specialNumber
                 };
@@ -556,13 +649,63 @@
                 messageEl.textContent = `✅ 期別 ${drawIdInput} 紀錄新增成功，分析數據已自動更新！`;
                 messageEl.classList.add('text-green-500', 'p-2', 'rounded-lg', 'bg-green-900/50');
                 e.target.reset(); 
+                
             } catch (error) {
                 console.error("寫入 Firestore 失敗: ", error);
-                messageEl.textContent = `❌ 新增紀錄失敗 (Firestore 錯誤): ${error.message}. 請檢查您的 Firebase 安全規則是否允許寫入。`;
+                messageEl.textContent = `❌ 新增紀錄失敗 (Firestore 錯誤): ${error.message}. 請檢查您的 Firebase 權限。`;
                 messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
             }
         }
         
+        // --- 刪除功能 (使用自定義 Modal) ---
+        window.deleteRecord = (drawId) => {
+            renderModal({
+                title: '確認刪除紀錄',
+                content: `您確定要刪除期別 **${drawId}** 的開獎紀錄嗎？此操作不可逆。`,
+                confirmText: '確認刪除',
+                onConfirm: async () => {
+                    const messageEl = document.getElementById('form-message');
+                    try {
+                        await deleteRecordFromFirestore(drawId);
+                        messageEl.textContent = `✅ 期別 ${drawId} 紀錄已成功刪除。`;
+                        messageEl.classList.add('text-green-500', 'p-2', 'rounded-lg', 'bg-green-900/50');
+                    } catch (error) {
+                        messageEl.textContent = `❌ 刪除紀錄失敗 (Firestore 錯誤): ${error.message}`;
+                        messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
+                    }
+                    messageEl.classList.remove('hidden');
+                    closeModal();
+                }
+            });
+        }
+        
+        // --- Modal 函數 (與前版相同) ---
+        function renderModal({ title, content, confirmText, onConfirm }) {
+            const modalContainer = document.getElementById('modal-container');
+            modalContainer.innerHTML = `
+                <div id="custom-modal" class="fixed inset-0 bg-dark-bg/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                    <div class="bg-card-bg p-6 rounded-xl shadow-2xl max-w-sm w-full border border-primary/50">
+                        <h3 class="text-xl font-bold text-white mb-4 border-b border-primary/50 pb-2">${title}</h3>
+                        <p class="text-gray-300 mb-6">${content.replace(/\*\*/g, '<strong>').replace(/\*\*/g, '</strong>')}</p>
+                        <div class="flex justify-end space-x-3">
+                            <button id="modal-cancel-btn" class="py-2 px-4 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition duration-200">取消</button>
+                            <button id="modal-confirm-btn" class="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200">${confirmText}</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('modal-cancel-btn').onclick = closeModal;
+            document.getElementById('modal-confirm-btn').onclick = onConfirm;
+            modalContainer.classList.remove('hidden');
+        }
+
+        window.closeModal = () => {
+            document.getElementById('modal-container').classList.add('hidden');
+            document.getElementById('modal-container').innerHTML = '';
+        }
+
+        // --- 匯入/匯出函數 (保持與前版相同) ---
         
         function exportData() {
             const dataForExcel = dataStore.map(record => ({
@@ -718,6 +861,7 @@
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.5);
             border: 2px solid;
             transition: transform 0.2s;
+            flex-shrink: 0;
         }
         .lotto-ball.main {
             background: linear-gradient(145deg, #FFEFBA, #FFD700); /* Golden color for main */
@@ -731,18 +875,35 @@
         .lotto-ball:hover {
             transform: scale(1.05);
         }
+        /* Style for inline edit inputs */
+        .inline-edit-input {
+            width: 100%;
+            padding: 4px;
+            border-radius: 4px;
+            background-color: #1F2937;
+            border: 1px solid #60A5FA;
+            color: white;
+            font-size: 12px;
+        }
         @media (max-width: 768px) {
             .lotto-ball {
                 width: 30px;
                 height: 30px;
                 font-size: 14px;
             }
+            .table-responsive td { white-space: nowrap; }
+            .inline-edit-input {
+                font-size: 10px;
+                padding: 3px;
+            }
         }
     </style>
 </head>
 <body class="bg-dark-bg text-gray-100 min-h-screen p-4 font-sans antialiased">
+    <!-- Modal Container -->
+    <div id="modal-container" class="hidden"></div>
 
-    <!-- 錯誤顯示區塊 (新的，獨立於 main-content) -->
+    <!-- 錯誤顯示區塊 -->
     <div id="error-display" class="hidden"></div>
     
     <!-- 頁面結構 -->
@@ -750,7 +911,7 @@
 
         <header class="text-center mb-8 border-b border-primary pb-4">
             <h1 class="text-4xl md:text-5xl font-extrabold text-white tracking-tight">大樂透AI顧問🔮</h1>
-            <p class="text-secondary mt-2 text-lg">歷史數據統計與下一期候選號碼建議</p>
+            <p class="text-secondary mt-2 text-lg">歷史數據統計、編輯與下一期候選號碼建議</p>
         </header>
 
         <!-- 載入指示器 -->
@@ -763,7 +924,7 @@
         <div id="main-content" class="hidden">
             <p id="user-id-display" class="text-sm text-gray-500 mb-4 text-center"></p>
 
-            <!-- 部署提示 (僅供外部平台用戶閱讀) 
+            <!-- 部署提示 (僅供外部平台用戶閱讀)
             <div class="bg-yellow-900/40 border-l-4 border-yellow-400 p-4 mb-8 rounded-lg text-yellow-100">
                 <p class="font-bold text-lg">📢 跨平台部署提示 (務必檢查):</p>
                 <ul class="list-disc list-inside mt-2 text-sm space-y-1">
@@ -771,7 +932,7 @@
                     <li>請確認 Firebase 專案已啟用 **匿名登入**，且 Firestore 規則允許匿名用戶讀寫。</li>
                 </ul>
             </div>
-            -->
+             -->
 
             <!-- 預測結果區塊 -->
             <section class="mb-8">
@@ -803,7 +964,7 @@
                 </div>
 
                 <!-- 新增紀錄表單 -->
-                <h3 class="text-2xl font-semibold text-white border-t border-card-bg/50 pt-4 mb-4">新增開獎結果 (將直接寫入 Firestore)</h3>
+                <h3 class="text-2xl font-semibold text-white border-t border-card-bg/50 pt-4 mb-4">新增開獎號碼</h3>
                 <form id="add-result-form" class="grid grid-cols-1 md:grid-cols-5 gap-4">
                     <div class="col-span-1">
                         <label for="draw-id" class="block text-sm font-medium text-gray-300 mb-1">期別 (Draw ID) <span class="text-primary">*</span></label>
@@ -822,7 +983,7 @@
                         <input type="number" id="special-number" min="1" max="49" required class="w-full p-2 rounded-lg bg-dark-bg border border-gray-600 text-white focus:ring-primary focus:border-primary">
                     </div>
                     <div class="md:col-span-5">
-                        <button type="submit" class="w-full py-2 px-4 bg-primary hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md transform hover:scale-[1.01]">
+                        <button type="submit" id="submit-btn" class="w-full py-2 px-4 bg-primary hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md transform hover:scale-[1.01]">
                             新增並寫入 Firestore
                         </button>
                     </div>
@@ -860,15 +1021,16 @@
             
             <!-- 歷史紀錄 (增強呈現) -->
             <section>
-                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">📜 歷史開獎紀錄 (Firestore 實時同步)</h2>
+                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">📜 歷史開獎紀錄 (表格內編輯/刪除)</h2>
                 <div class="bg-card-bg rounded-xl shadow-lg overflow-x-auto max-h-96">
                     <table class="min-w-full divide-y divide-gray-700">
                         <thead class="bg-dark-bg sticky top-0">
                             <tr>
                                 <th class="px-4 py-3 text-left text-sm font-medium text-gray-300 uppercase tracking-wider">期別</th>
-                                <th class="px-4 py-3 text-left text-sm font-medium text-gray-300 uppercase tracking-wider">日期</th>
-                                <th class="px-4 py-3 text-center text-sm font-medium text-gray-300 uppercase tracking-wider">主號 (6個)</th>
-                                <th class="px-4 py-3 text-center text-sm font-medium text-gray-300 uppercase tracking-wider">特別號</th>
+                                <th class="px-4 py-3 text-left text-sm font-medium text-gray-300 uppercase tracking-wider min-w-[120px]">日期</th>
+                                <th class="px-4 py-3 text-center text-sm font-medium text-gray-300 uppercase tracking-wider min-w-[180px]">主號 (6個)</th>
+                                <th class="px-4 py-3 text-center text-sm font-medium text-gray-300 uppercase tracking-wider min-w-[60px]">特別號</th>
+                                <th class="px-4 py-3 text-center text-sm font-medium text-gray-300 uppercase tracking-wider min-w-[120px]">操作</th>
                             </tr>
                         </thead>
                         <tbody id="history-table" class="divide-y divide-gray-700">
@@ -882,3 +1044,4 @@
     </div>
 </body>
 </html>
+
