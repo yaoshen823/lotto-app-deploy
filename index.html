@@ -32,6 +32,7 @@
                         'genius': '#4F46E5', // Indigo for Genius
                         'ai': '#06B6D4', // Cyan for AI
                         'extreme': '#EF4444', // Red for Extreme
+                        'markov': '#84CC16', // Lime Green for Markov
                     }
                 }
             }
@@ -46,6 +47,7 @@
         let unsubscribe = () => {}; 
         let currentEditingId = null; 
         let COLLECTION_PATH = '';
+        const MARKOV_WINDOW = 10; // 馬可夫鏈計算窗口：近 10 期
 
         // 初始數據集 (78 筆 2025 年紀錄 - 確保格式統一)
         const initialLottoData = [
@@ -140,7 +142,7 @@
             measurementId: "G-PESKZ6YGT1"
         };
         
-        // --- 核心初始化流程 ---
+        // --- 核心初始化流程 (保持不變) ---
 
         async function initializeFirebase() {
             const errorDisplay = document.getElementById('error-display');
@@ -187,6 +189,8 @@
                 document.getElementById('add-result-form').addEventListener('submit', handleAddResult);
                 document.getElementById('export-data-btn').addEventListener('click', exportData);
                 document.getElementById('import-file-input').addEventListener('change', importData);
+                document.getElementById('backtest-run-btn').addEventListener('click', runBacktest);
+
                 
                 loadingIndicator.classList.add('hidden');
                 mainContent.classList.remove('hidden');
@@ -194,6 +198,8 @@
 
                 // 渲染 Lucide Icons
                 lucide.createIcons();
+                // 填充回溯測試期別選擇
+                fillBacktestSelector();
 
             } catch (error) {
                 console.error("Firebase 啟動失敗:", error);
@@ -258,7 +264,9 @@
                     });
                 });
                 dataStore = records;
+                dataStore.sort((a, b) => b.drawId.localeCompare(a.drawId)); // 確保最新的在前面
                 processAndRenderData(dataStore);
+                fillBacktestSelector();
                 
             }, (error) => {
                 console.error("實時監聽錯誤:", error);
@@ -268,13 +276,12 @@
             });
         }
         
-        // --- 天才策略核心計算 ---
+        // --- 天才策略核心計算 (保持不變) ---
         function calculateGeniusScore(records) {
             const geniusScoreMap = new Map();
             const numRange = Array.from({ length: 49 }, (_, i) => i + 1);
             numRange.forEach(n => geniusScoreMap.set(n, 0));
 
-            // 1. 建立特徵矩陣 (Feature Matrix) - 每個號碼對其他號碼的條件影響力
             const transitionMatrix = new Array(50).fill(0).map(() => new Array(50).fill(0));
             const totalTransitions = new Array(50).fill(0);
 
@@ -290,9 +297,8 @@
                 }
             }
             
-            // 2. 應用 L2 正則化 (懲罰稀有關係，突出穩定關係)
-            const LAMBDA = 0.5; // 正則化係數
-            const AVERAGE_NEXT_APPEARANCE = 6 * 6 / 49; // 預期下期出現次數 (基於隨機)
+            const LAMBDA = 0.5; 
+            const AVERAGE_NEXT_APPEARANCE = 6 * 6 / 49; 
 
             for (const targetNum of numRange) {
                 let score = 0;
@@ -307,37 +313,76 @@
                     score += penalizedBeta; 
                 }
                 
-                // 懲罰奇數模 7 週期（天才認為週期性太簡單，要選反週期）
                 const mod7Penalty = (targetNum % 7 === 1 || targetNum % 7 === 3 || targetNum % 7 === 5) ? -0.1 : 0;
 
                 geniusScoreMap.set(targetNum, score + mod7Penalty);
             }
 
-            // 3. 排序結果
             const sortedGeniusScore = Array.from(geniusScoreMap.entries())
                 .sort((a, b) => b[1] - a[1]);
 
             return sortedGeniusScore;
         }
 
-        // --- 核心分析邏輯 ---
-        
-        function processAndRenderData(records) {
-            if (records.length === 0) {
-                document.getElementById('prediction-results').innerHTML = '<p class="text-center text-gray-400 p-4">無歷史紀錄，無法進行分析。</p>';
-                document.getElementById('freq-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
-                document.getElementById('weighted-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
-                document.getElementById('cooccurrence-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
-                document.getElementById('combo-stats').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
-                document.getElementById('history-table').innerHTML = '<tr><td colspan="5" class="text-center py-4 text-gray-500">尚無開獎紀錄</td></tr>';
-                return;
+        // --- 馬可夫鏈策略核心計算 (NEW) ---
+        function calculateMarkovTendency(records) {
+            const numRange = Array.from({ length: 49 }, (_, i) => i + 1);
+            const transitionScores = new Map();
+
+            // 僅使用近 MARKOV_WINDOW 期的數據
+            const localRecords = records.slice(0, MARKOV_WINDOW);
+
+            if (localRecords.length < 2) return numRange.map(n => [n, 0]);
+
+            // [i] 號碼出現後，[j] 號碼在下一期出現的次數
+            const localTransitionMatrix = new Array(50).fill(0).map(() => new Array(50).fill(0));
+            const localTotalTransitions = new Array(50).fill(0);
+
+            for (let i = 0; i < localRecords.length - 1; i++) {
+                const currentDraw = localRecords[i].main;
+                const nextDraw = localRecords[i+1].main; 
+
+                for (const num_i of currentDraw) {
+                    localTotalTransitions[num_i]++;
+                    for (const num_j of nextDraw) {
+                        localTransitionMatrix[num_i][num_j]++;
+                    }
+                }
             }
+
+            // 計算每個號碼的「被傳導得分」：即它被所有剛開出的號碼帶出來的機率總和
+            for (const targetNum of numRange) {
+                let score = 0;
+                
+                // 每個已開出的號碼對 targetNum 的條件機率 P(targetNum | predictorNum)
+                for (const predictorNum of numRange) {
+                    const count = localTransitionMatrix[predictorNum][targetNum];
+                    if (localTotalTransitions[predictorNum] > 0) {
+                        // 條件機率 P(Y | X)
+                        const conditionalProb = count / localTotalTransitions[predictorNum];
+                        score += conditionalProb; 
+                    }
+                }
+                transitionScores.set(targetNum, score);
+            }
+
+            // 排序結果
+            const sortedMarkovScores = Array.from(transitionScores.entries())
+                .sort((a, b) => b[1] - a[1]);
+
+            return sortedMarkovScores;
+        }
+
+
+        // --- 核心分析邏輯 (可重複使用，用於即時和回溯) ---
+        
+        function runAnalysis(records) {
+            if (records.length === 0) return {};
 
             const freqMap = new Map();
             const weightedFreqMap = new Map();
             const gapMap = new Map();
             const cooccurrenceMap = new Map();
-            
             const consecutiveCount = new Map(); 
             const parityCount = new Map();       
 
@@ -400,23 +445,16 @@
                 
                 drawIndex++;
             }
-            
-            if (drawIndex === 0) {
-                 document.getElementById('prediction-results').innerHTML = '<p class="text-center text-red-400 p-4">所有紀錄皆無效或格式錯誤，無法進行分析。</p>';
-                return;
-            }
-
 
             const sortedFreq = Array.from(freqMap.entries()).filter(([num]) => num <= 49 && freqMap.get(num) > 0).sort((a, b) => b[1] - a[1]);
             const sortedWeighted = Array.from(weightedFreqMap.entries()).filter(([num]) => num <= 49 && weightedFreqMap.get(num) > 0).sort((a, b) => b[1] - a[1]);
             const sortedCooccurrence = Array.from(cooccurrenceMap.entries()).sort((a, b) => b[1] - a[1]);
             const sortedGap = Array.from(gapMap.entries()).filter(([num]) => num <= 49).sort((a, b) => b[1] - a[1]);
-            
             const sortedParity = Array.from(parityCount.entries()).sort((a, b) => b[1] - a[1]);
             const sortedConsecutive = Array.from(consecutiveCount.entries()).sort((a, b) => b[1] - a[1]);
             
-            // --- 天才分數計算 ---
             const sortedGeniusScore = calculateGeniusScore(records);
+            const sortedMarkovScores = calculateMarkovTendency(records);
 
             const combinationStats = {
                 bestParity: sortedParity[0] ? sortedParity[0][0] : '3:3',
@@ -427,14 +465,32 @@
                 consecutiveDistribution: sortedConsecutive,
             };
 
-            const predictions = generatePredictions(sortedWeighted, sortedFreq, sortedGap, combinationStats, sortedGeniusScore);
-            renderStats(records, sortedFreq.slice(0, 10), sortedWeighted.slice(0, 10), sortedCooccurrence.slice(0, 10), combinationStats, predictions);
+            return { sortedFreq, sortedWeighted, sortedGap, sortedCooccurrence, combinationStats, sortedGeniusScore, sortedMarkovScores };
+        }
+
+        function processAndRenderData(records) {
+            if (records.length === 0) {
+                // ... (處理無數據的渲染邏輯)
+                document.getElementById('prediction-results').innerHTML = '<p class="text-center text-gray-400 p-4">無歷史紀錄，無法進行分析。</p>';
+                document.getElementById('backtest-selector').innerHTML = '<option value="">無足夠紀錄進行回溯測試</option>';
+                return;
+            }
+
+            const analysis = runAnalysis(records);
+            
+            if (!analysis.sortedFreq) {
+                 document.getElementById('prediction-results').innerHTML = '<p class="text-center text-red-400 p-4">所有紀錄皆無效或格式錯誤，無法進行分析。</p>';
+                return;
+            }
+
+            const predictions = generatePredictions(analysis);
+            renderStats(records, analysis.sortedFreq.slice(0, 10), analysis.sortedWeighted.slice(0, 10), analysis.sortedCooccurrence.slice(0, 10), analysis.combinationStats, predictions);
             // 渲染 Lucide Icons
             lucide.createIcons();
         }
         
-        // --- 預測生成邏輯 (更新為 5 個策略) ---
-        function generatePredictions(sortedWeighted, sortedFreq, sortedGap, comboStats, sortedGeniusScore) {
+        // --- 預測生成邏輯 (更新為 5 個策略 - 移除策略二，新增策略六) ---
+        function generatePredictions({ sortedWeighted, sortedFreq, sortedGap, combinationStats, sortedGeniusScore, sortedMarkovScores }) {
             
             const safePick = (sourceArray, existingSet, n) => {
                 const picked = [];
@@ -497,17 +553,18 @@
             }, 0);
             
             const MAX_ITERATIONS = 50;
+            const targetOdd = combinationStats.bestParity.split(':').map(Number)[0];
 
-            // --- 策略一：熱門號優選 (優化穩健型) ---
+
+            // --- 策略一：熱門號優選 (穩健型) ---
             let set1 = [];
-            const [targetOdd1] = comboStats.bestParity.split(':').map(Number);
             let iterations1 = 0;
             
             while (set1.length !== 6 && iterations1 < MAX_ITERATIONS) {
                 const hotCandidates = sortedWeighted.slice(0, 15); 
                 set1 = safePick(hotCandidates, new Set(), 6);
                 const currentOdd = set1.filter(n => n % 2 !== 0).length;
-                if (Math.abs(currentOdd - targetOdd1) <= 1 && (new Set(set1)).size === 6) break; 
+                if (Math.abs(currentOdd - targetOdd) <= 1 && (new Set(set1)).size === 6) break; 
                 iterations1++;
             }
             if ((new Set(set1)).size !== 6) {
@@ -518,19 +575,16 @@
             const finalOddCount1 = set1.map(Number).filter(n => n % 2 !== 0).length;
             const special1 = generateSpecialPicks(set1.map(Number));
 
-            // --- 策略二：冷熱號均衡 (強化均衡型) ---
-            const hotCandidates2 = sortedWeighted.slice(0, 15);
-            const coldCandidates2 = sortedGap.slice(0, 15);
-            const [targetOdd2] = comboStats.bestParity.split(':').map(Number);
+            // --- 策略二 (原策略三)：最大熵/反向模式 (極端型) ---
             let set2 = [];
+            const coldCandidates2 = sortedGap.slice(0, 15); 
+            const worstOdd = combinationStats.worstParity.split(':').map(Number)[0];
             let iterations2 = 0;
             
             while (set2.length !== 6 && iterations2 < MAX_ITERATIONS) {
-                const hotPicks = safePick(hotCandidates2, new Set(), 3);
-                const coldPicks = safePick(coldCandidates2, new Set(hotPicks), 3);
-                set2 = [...hotPicks, ...coldPicks];
+                set2 = safePick(coldCandidates2, new Set(), 6);
                 const currentOdd = set2.filter(n => n % 2 !== 0).length;
-                if (Math.abs(currentOdd - targetOdd2) <= 1 && (new Set(set2)).size === 6) break; 
+                if (Math.abs(currentOdd - worstOdd) <= 1 && (new Set(set2)).size === 6) break; 
                 iterations2++;
             }
             if ((new Set(set2)).size !== 6) {
@@ -540,30 +594,10 @@
             set2 = set2.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
             const finalOddCount2 = set2.map(Number).filter(n => n % 2 !== 0).length;
             const special2 = generateSpecialPicks(set2.map(Number));
-            
-            // --- 策略三：最大熵/反向模式 (極端型) ---
-            let set3 = [];
-            const coldCandidates3 = sortedGap.slice(0, 15); 
-            const [targetOdd3] = comboStats.worstParity.split(':').map(Number);
-            let iterations3 = 0;
-            
-            while (set3.length !== 6 && iterations3 < MAX_ITERATIONS) {
-                set3 = safePick(coldCandidates3, new Set(), 6);
-                const currentOdd = set3.filter(n => n % 2 !== 0).length;
-                if (Math.abs(currentOdd - targetOdd3) <= 1 && (new Set(set3)).size === 6) break; 
-                iterations3++;
-            }
-            if ((new Set(set3)).size !== 6) {
-                set3 = Array.from(new Set(set3)).slice(0, 6);
-                while (set3.length < 6) { const rand = Math.floor(Math.random() * 49) + 1; if (!set3.includes(rand)) set3.push(rand); }
-            }
-            set3 = set3.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
-            const finalOddCount3 = set3.map(Number).filter(n => n % 2 !== 0).length;
-            const special3 = generateSpecialPicks(set3.map(Number));
 
-            // --- 策略四：AI 適應性模式與極端分散 ---
-            const aiCandidates = sortedGeniusScore.slice(0, 15).map(item => item[0]);
-            let set4 = [];
+            // --- 策略三 (原策略四)：AI 適應性模式與極端分散 ---
+            const aiCandidates = sortedGeniusScore.slice(0, 15).map(item => item[0]); // 使用GeniusScore作為AI潛力池
+            let set3 = [];
             let currentBestDispersion = 0;
             
             for (let i = 0; i < MAX_ITERATIONS * 2; i++) {
@@ -578,43 +612,61 @@
                 }
 
                 if (minGap > currentBestDispersion) {
-                    set4 = combo;
+                    set3 = combo;
                     currentBestDispersion = minGap;
                 }
             }
             
-            if (set4.length !== 6) {
-                set4 = safePick(aiCandidates.map(n => [n]), new Set(), 6);
-                while (set4.length < 6) { const rand = Math.floor(Math.random() * 49) + 1; if (!set4.includes(rand)) set4.push(rand); }
+            if (set3.length !== 6) {
+                set3 = safePick(aiCandidates.map(n => [n]), new Set(), 6);
+                while (set3.length < 6) { const rand = Math.floor(Math.random() * 49) + 1; if (!set3.includes(rand)) set3.push(rand); }
             }
 
+            set3 = set3.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
+            const finalOddCount3 = set3.map(Number).filter(n => n % 2 !== 0).length;
+            const special3 = generateSpecialPicks(set3.map(Number));
+            
+            // --- 策略四 (原策略五)：天才的巴布隆迴歸 ---
+            const geniusCandidates = sortedGeniusScore.slice(0, 10).map(item => item[0]); 
+            let set4 = [];
+            
+            let iterations4 = 0;
+            
+            while (set4.length !== 6 && iterations4 < MAX_ITERATIONS) {
+                const candidates = [...geniusCandidates];
+                set4 = safePick(candidates, new Set(), 6);
+                
+                const hasEvenMod7 = set4.filter(n => (n % 7 === 0 || n % 7 === 2 || n % 7 === 4 || n % 7 === 6)).length;
+                const currentOdd = set4.filter(n => n % 2 !== 0).length;
+
+                if (hasEvenMod7 >= 3 && Math.abs(currentOdd - targetOdd) <= 1 && (new Set(set4)).size === 6) break; 
+                iterations4++;
+            }
+            if ((new Set(set4)).size !== 6) {
+                set4 = safePick(geniusCandidates, new Set(), 6);
+                while (set4.length < 6) { const rand = Math.floor(Math.random() * 49) + 1; if (!set4.includes(rand)) set4.push(rand); }
+            }
+            
             set4 = set4.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
             const finalOddCount4 = set4.map(Number).filter(n => n % 2 !== 0).length;
             const special4 = generateSpecialPicks(set4.map(Number));
-            
-            // --- 策略五：天才的巴布隆迴歸 (新增) ---
-            const geniusCandidates = sortedGeniusScore.slice(0, 10).map(item => item[0]); 
+
+            // --- 策略五：局部馬可夫熱區 (NEW LMT) ---
+            const markovCandidates = sortedMarkovScores.slice(0, 15).map(item => item[0]);
             let set5 = [];
-            const [targetOdd5] = comboStats.bestParity.split(':').map(Number); // 傾向主流奇偶比
             let iterations5 = 0;
             
             while (set5.length !== 6 && iterations5 < MAX_ITERATIONS) {
-                const candidates = [...geniusCandidates];
-                set5 = safePick(candidates, new Set(), 6);
-                
-                // 懲罰奇數模 7 號碼 (反世俗週期)
-                const hasEvenMod7 = set5.filter(n => (n % 7 === 0 || n % 7 === 2 || n % 7 === 4 || n % 7 === 6)).length;
+                set5 = safePick(markovCandidates.map(n => [n]), new Set(), 6);
                 const currentOdd = set5.filter(n => n % 2 !== 0).length;
-
-                // 如果滿足天才的分數且奇偶比接近主流，則接受
-                if (hasEvenMod7 >= 3 && Math.abs(currentOdd - targetOdd5) <= 1 && (new Set(set5)).size === 6) break; 
+                if (Math.abs(currentOdd - targetOdd) <= 1 && (new Set(set5)).size === 6) break; 
                 iterations5++;
             }
             if ((new Set(set5)).size !== 6) {
-                set5 = safePick(geniusCandidates, new Set(), 6);
+                set5 = safePick(markovCandidates.map(n => [n]), new Set(), 6);
                 while (set5.length < 6) { const rand = Math.floor(Math.random() * 49) + 1; if (!set5.includes(rand)) set5.push(rand); }
             }
-            
+
             set5 = set5.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
             const finalOddCount5 = set5.map(Number).filter(n => n % 2 !== 0).length;
             const special5 = generateSpecialPicks(set5.map(Number));
@@ -624,59 +676,39 @@
 
             return [
                 {
-                    name: "策略一：熱門號優選",
-                    subtitle: "穩健的主流趨勢",
-                    icon: 'TrendingUp',
-                    color: 'secondary',
-                    numbers: set1.join(', '),
-                    special: special1,
-                    basis: `基於近期加權熱門號碼池，並強制優化組合，使其奇偶比接近歷史最常見的 **${comboStats.bestParity}**。`,
+                    id: 'S1', name: "策略一：熱門號優選", subtitle: "穩健的主流趨勢", icon: 'TrendingUp', color: 'secondary',
+                    numbers: set1.join(', '), special: special1,
+                    basis: `基於近期加權熱門號碼池，並強制優化組合，使其奇偶比接近歷史最常見的 **${combinationStats.bestParity}**。`,
                     metrics: `奇偶比: ${finalOddCount1}:${6-finalOddCount1} | 連號數: ${checkConsecutive(set1)} 組`
                 },
                 {
-                    name: "策略二：冷熱號均衡",
-                    subtitle: "分散風險的黃金比例",
-                    icon: 'Balance',
-                    color: 'primary',
-                    numbers: set2.join(', '),
-                    special: special2,
-                    basis: `冷熱號各半 (3個熱號 / 3個冷號)，並以歷史最常見的**奇偶比 (${comboStats.bestParity})**進行組合優化。`,
+                    id: 'S2', name: "策略二：最大熵/反向模式", subtitle: "極端冷門的回補賭注", icon: 'Ghost', color: 'extreme',
+                    numbers: set2.join(', '), special: special2,
+                    basis: `專注於**間隔最長**的冷門號碼，並依據歷史最不常見的**奇偶比 (${combinationStats.worstParity})** 來構建組合。`,
                     metrics: `奇偶比: ${finalOddCount2}:${6-finalOddCount2} | 連號數: ${checkConsecutive(set2)} 組`
                 },
                 {
-                    name: "策略三：最大熵/反向模式",
-                    subtitle: "極端冷門的回補賭注",
-                    icon: 'Ghost',
-                    color: 'extreme',
-                    numbers: set3.join(', '),
-                    special: special3,
-                    basis: `專注於**間隔最長**的冷門號碼，並依據歷史最不常見的**奇偶比 (${comboStats.worstParity})** 來構建組合。`,
+                    id: 'S3', name: "策略三：AI 智慧型", subtitle: "計算分佈的適應性", icon: 'Bot', color: 'ai',
+                    numbers: set3.join(', '), special: special3,
+                    basis: `由 AI 結合「鄰近活躍度」與「冷熱間隔」篩選潛力號碼，並最大化六個號碼在 1-49 範圍內的**分佈分散度**。`,
                     metrics: `奇偶比: ${finalOddCount3}:${6-finalOddCount3} | 連號數: ${checkConsecutive(set3)} 組`
                 },
                 {
-                    name: "策略四：AI 智慧型",
-                    subtitle: "計算分佈的適應性",
-                    icon: 'Bot',
-                    color: 'ai',
-                    numbers: set4.join(', '),
-                    special: special4,
-                    basis: `由 AI 結合「鄰近活躍度」與「冷熱間隔」篩選潛力號碼，並最大化六個號碼在 1-49 範圍內的**分佈分散度**。`,
+                    id: 'S4', name: "策略四：天才的巴布隆迴歸", subtitle: "隱藏結構的複雜預測", icon: 'BrainCircuit', color: 'genius',
+                    numbers: set4.join(', '), special: special4,
+                    basis: `採用 L2 正則化的貝葉斯迴歸變種，基於號碼的**跨期條件影響力**來選擇。專注於**高貢獻度**和**反世俗週期**的號碼。`,
                     metrics: `奇偶比: ${finalOddCount4}:${6-finalOddCount4} | 連號數: ${checkConsecutive(set4)} 組`
                 },
-                {
-                    name: "策略五：天才的巴布隆迴歸",
-                    subtitle: "隱藏結構的複雜預測",
-                    icon: 'BrainCircuit',
-                    color: 'genius',
-                    numbers: set5.join(', '),
-                    special: special5,
-                    basis: `採用 L2 正則化的貝葉斯迴歸變種，基於號碼的**跨期條件影響力**來選擇。專注於**高貢獻度**和**反世俗週期**的號碼。`,
+                 {
+                    id: 'S5', name: "策略五：局部馬可夫熱區", subtitle: "短期連動的傳導效應", icon: 'Zap', color: 'markov',
+                    numbers: set5.join(', '), special: special5,
+                    basis: `基於近 ${MARKOV_WINDOW} 期的局部馬可夫鏈，選擇**被剛開出號碼「傳導」機率最高**的潛力號碼組。`,
                     metrics: `奇偶比: ${finalOddCount5}:${6-finalOddCount5} | 連號數: ${checkConsecutive(set5)} 組`
                 }
             ];
         }
 
-        // --- 渲染統計數據 (更新預測結果為 5 欄) ---
+        // --- 渲染統計數據 ---
         function renderStats(records, sortedFreq, sortedWeighted, sortedCooccurrence, comboStats, predictions) {
             
             const formatComboStats = (dist) => dist.map(([key, count]) => `
@@ -707,28 +739,22 @@
             
             // 預測結果區塊渲染
             document.getElementById('prediction-results').innerHTML = predictions.map(p => {
-                const colors = {
-                    'secondary': 'border-secondary/70 bg-secondary/10',
-                    'primary': 'border-primary/70 bg-primary/10',
-                    'extreme': 'border-extreme/70 bg-extreme/10',
-                    'ai': 'border-ai/70 bg-ai/10',
-                    'genius': 'border-genius/70 bg-genius/10',
+                const colors = { 
+                    'secondary': 'border-secondary/70 bg-secondary/10', 'primary': 'border-primary/70 bg-primary/10', 'extreme': 'border-extreme/70 bg-extreme/10', 
+                    'ai': 'border-ai/70 bg-ai/10', 'genius': 'border-genius/70 bg-genius/10', 'markov': 'border-markov/70 bg-markov/10',
                 };
-                
-                const hoverEffects = {
-                    'secondary': 'hover:shadow-secondary/30',
-                    'primary': 'hover:shadow-primary/30',
-                    'extreme': 'hover:shadow-extreme/30',
-                    'ai': 'hover:shadow-ai/30',
-                    'genius': 'hover:shadow-genius/30',
+                const hoverEffects = { 
+                    'secondary': 'hover:shadow-secondary/30', 'primary': 'hover:shadow-primary/30', 'extreme': 'hover:shadow-extreme/30', 
+                    'ai': 'hover:shadow-ai/30', 'genius': 'hover:shadow-genius/30', 'markov': 'hover:shadow-markov/30',
                 };
                 
                 const titleColor = `text-${p.color}`;
                 const borderColor = colors[p.color];
                 const hoverShadow = hoverEffects[p.color];
                 
-                // 天才策略使用特殊邊框樣式
-                const borderStyle = p.color === 'genius' ? 'border-4 border-double border-genius' : `border-l-4 ${borderColor}`;
+                const borderStyle = p.color === 'genius' ? 'border-4 border-double border-genius' : 
+                                    p.color === 'markov' ? 'border-l-4 border-r-4 border-markov/70' : 
+                                    `border-l-4 ${borderColor}`;
 
 
                 return `
@@ -818,8 +844,187 @@
                 `;
             }).join('');
         }
+        
+        // --- 回溯測試函數 (保持與前版相同) ---
 
-        // --- 輔助/CRUD/I/O 函數 (與前版相同) ---
+        function fillBacktestSelector() {
+            const selector = document.getElementById('backtest-selector');
+            selector.innerHTML = '<option value="" disabled selected>--- 選擇要回溯的期別 ---</option>';
+            
+            // 排除最新一期 (因為我們需要至少一筆紀錄來計算)
+            const availableRecords = dataStore.slice(1); 
+            
+            if (availableRecords.length < 2) {
+                selector.innerHTML = '<option value="" disabled selected>紀錄不足 (需至少 2 期)</option>';
+                return;
+            }
+
+            // 填充選項
+            availableRecords.forEach(record => {
+                const option = document.createElement('option');
+                option.value = record.drawId;
+                option.textContent = `期別 ${record.drawId} (${record.date})`;
+                selector.appendChild(option);
+            });
+        }
+
+        async function runBacktest() {
+            const selector = document.getElementById('backtest-selector');
+            const drawId = selector.value;
+            const resultsDiv = document.getElementById('backtest-results');
+            resultsDiv.innerHTML = `<p class="text-center text-ai/80 mt-4"><i data-lucide="Loader" class="w-5 h-5 inline-block animate-spin mr-2"></i>正在進行回溯測試...</p>`;
+            lucide.createIcons();
+
+            if (!drawId) {
+                resultsDiv.innerHTML = `<p class="text-red-400 mt-4 text-center">❌ 請選擇一個期別進行回溯測試。</p>`;
+                return;
+            }
+
+            // 找到該期別在 dataStore 中的索引
+            const targetIndex = dataStore.findIndex(r => r.drawId === drawId);
+            if (targetIndex === -1) {
+                resultsDiv.innerHTML = `<p class="text-red-400 mt-4 text-center">❌ 找不到該期紀錄。</p>`;
+                return;
+            }
+            
+            // 實際開獎號碼 (Target)
+            const actualDraw = dataStore[targetIndex];
+            const actualNumbers = new Set(actualDraw.main);
+
+            // 訓練數據集：只使用該期之前的所有紀錄
+            const trainingData = dataStore.slice(targetIndex + 1); 
+
+            if (trainingData.length < 5) {
+                resultsDiv.innerHTML = `<p class="text-red-400 mt-4 text-center">❌ 訓練數據不足 (至少需要 5 期歷史數據)。</p>`;
+                return;
+            }
+
+            // 運行分析 (用訓練數據)
+            const analysis = runAnalysis(trainingData);
+            if (!analysis.sortedFreq) {
+                resultsDiv.innerHTML = `<p class="text-red-400 mt-4 text-center">❌ 訓練數據格式錯誤，無法計算分析指標。</p>`;
+                return;
+            }
+            
+            // 運行預測 (用訓練數據的指標)
+            const predictedStrategies = generatePredictions(analysis);
+            
+            // 進行比對與評分
+            const comparisonResults = predictedStrategies.map(strategy => {
+                const predictedNumbers = new Set(strategy.numbers.split(', ').map(s => parseInt(s)));
+                let hitCount = 0;
+                let specialHit = false; 
+
+                // 主號命中數
+                predictedNumbers.forEach(num => {
+                    if (actualNumbers.has(num)) {
+                        hitCount++;
+                    }
+                });
+
+                // 特別號命中 (我們只比對主號，但可額外計算特別號)
+                const specialCandidates = strategy.special.split(', ').map(s => parseInt(s));
+                if (specialCandidates.includes(actualDraw.special)) {
+                    specialHit = true;
+                }
+
+                // 計算策略傾向命中 (奇偶比)
+                const predictedOdd = strategy.numbers.split(', ').map(n => parseInt(n)).filter(n => n % 2 !== 0).length;
+                const actualOdd = actualDraw.main.filter(n => n % 2 !== 0).length;
+                const parityMatch = predictedOdd === actualOdd;
+
+                return {
+                    ...strategy,
+                    hitCount: hitCount,
+                    specialHit: specialHit,
+                    parityMatch: parityMatch,
+                    predictedNumbers: Array.from(predictedNumbers).sort((a, b) => a - b)
+                };
+            }).sort((a, b) => b.hitCount - a.hitCount); // 依命中數降序排列
+
+            // 渲染比對結果
+            renderBacktestResults(actualDraw, comparisonResults);
+            lucide.createIcons();
+        }
+        
+        function renderBacktestResults(actualDraw, comparisonResults) {
+            const resultsDiv = document.getElementById('backtest-results');
+
+            const actualBalls = actualDraw.main.map(n => `<span class="lotto-ball main">${n.toString().padStart(2, '0')}</span>`).join('');
+            const specialBall = `<span class="lotto-ball special">${actualDraw.special.toString().padStart(2, '0')}</span>`;
+
+            const rankStyle = (index) => {
+                if (index === 0) return 'bg-markov/70 text-dark-bg font-extrabold shadow-xl';
+                if (index === 1) return 'bg-secondary/70 text-dark-bg font-bold shadow-lg';
+                if (index === 2) return 'bg-gray-500 text-white font-bold shadow-md';
+                return 'bg-card-bg/50 text-gray-400';
+            };
+
+            const hitStyle = (count) => {
+                if (count >= 3) return 'text-extreme font-extrabold text-xl animate-pulse';
+                if (count >= 1) return 'text-secondary font-bold';
+                return 'text-gray-400';
+            };
+            
+            const renderPredictedBalls = (predicted, actual) => {
+                const actualSet = new Set(actual);
+                return predicted.map(n => {
+                    const hit = actualSet.has(n);
+                    const baseClasses = "lotto-ball";
+                    const hitClasses = hit ? 'bg-green-600 text-white border-green-700' : 'main'; 
+                    return `<span class="${baseClasses} ${hitClasses}">${n.toString().padStart(2, '0')}</span>`;
+                }).join('');
+            };
+
+
+            resultsDiv.innerHTML = `
+                <div class="mt-6 p-4 rounded-xl shadow-2xl bg-card-bg/80 border-b-4 border-primary">
+                    <h3 class="text-2xl font-extrabold text-primary mb-3">🔥 實際開獎結果 (期別 ${actualDraw.drawId})</h3>
+                    <div class="flex flex-wrap items-center gap-2">
+                        ${actualBalls}
+                        <i data-lucide="Plus" class="w-6 h-6 text-primary"></i>
+                        ${specialBall}
+                    </div>
+                </div>
+
+                <div class="mt-6 overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-700">
+                        <thead class="bg-dark-bg sticky top-0">
+                            <tr>
+                                <th class="py-3 px-4 text-left text-sm font-medium text-gray-300 uppercase">排名</th>
+                                <th class="py-3 px-4 text-left text-sm font-medium text-gray-300 uppercase">策略</th>
+                                <th class="py-3 px-4 text-center text-sm font-medium text-gray-300 uppercase">命中主號數 (Max 6)</th>
+                                <th class="py-3 px-4 text-left text-sm font-medium text-gray-300 uppercase min-w-[300px]">預測號碼組 (命中標記)</th>
+                                <th class="py-3 px-4 text-center text-sm font-medium text-gray-300 uppercase">奇偶比一致</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-700">
+                            ${comparisonResults.map((r, index) => `
+                                <tr class="hover:bg-card-bg/70 ${rankStyle(index)}">
+                                    <td class="py-3 px-4 text-center font-bold">${index + 1}</td>
+                                    <td class="py-3 px-4 flex items-center space-x-2">
+                                        <i data-lucide="${r.icon}" class="w-5 h-5 text-${r.color}"></i>
+                                        <span class="font-bold">${r.name.replace('策略一：', '').replace('策略二：', '').replace('策略三：', '').replace('策略四：', '').replace('策略五：', '')}</span>
+                                    </td>
+                                    <td class="py-3 px-4 text-center ${hitStyle(r.hitCount)}">${r.hitCount} 個</td>
+                                    <td class="py-3 px-4">
+                                        <div class="flex flex-wrap gap-1">
+                                            ${renderPredictedBalls(r.predictedNumbers, actualDraw.main)}
+                                        </div>
+                                    </td>
+                                    <td class="py-3 px-4 text-center">
+                                        <i data-lucide="${r.parityMatch ? 'CheckCircle' : 'XCircle'}" class="w-5 h-5 ${r.parityMatch ? 'text-green-500' : 'text-red-500'} inline-block"></i>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        
+        // --- 輔助/CRUD/I/O 函數 (保持與前版相同) ---
         window.startEdit = (drawId) => {
             currentEditingId = drawId;
             processAndRenderData(dataStore);
@@ -1171,6 +1376,7 @@
             -webkit-appearance: none; 
             appearance: none;
         }
+        /* Media Queries for Responsive Grid */
         @media (max-width: 768px) {
             .lotto-ball {
                 width: 30px;
@@ -1182,19 +1388,15 @@
                 font-size: 10px;
                 padding: 3px;
             }
-            /* Mobile: 1 column */
             #prediction-results { grid-template-columns: repeat(1, minmax(0, 1fr)); }
         }
         @media (min-width: 768px) {
-            /* Tablet: 2 columns */
             #prediction-results { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (min-width: 1024px) {
-            /* Desktop: 3 columns */
             #prediction-results { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         }
         @media (min-width: 1280px) {
-            /* XL Desktop: 5 columns */
             #prediction-results { grid-template-columns: repeat(5, minmax(0, 1fr)); }
         }
 
@@ -1233,11 +1435,11 @@
                     <li>請確認 Firebase 專案已啟用 **匿名登入**，且 Firestore 規則允許匿名用戶讀寫。</li>
                 </ul>
             </div>
-             ->
+            -->
 
             <!-- 預測結果區塊 -->
             <section class="mb-8">
-                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">🎯 五組候選號碼 (AI 多策略分析)</h2>
+                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">🎯 AI 多策略分析 </h2>
                 <!-- 調整為 5 欄網格 -->
                 <div id="prediction-results" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
                     <!-- Prediction results will be injected here -->
@@ -1247,9 +1449,37 @@
                 </p>
             </section>
             
+            <!-- 策略回溯測試區塊 -->
+            <section class="mb-8 p-6 bg-card-bg rounded-xl shadow-2xl border border-ai/50">
+                <h2 class="text-3xl font-bold text-white mb-4 flex items-center space-x-2">
+                    <i data-lucide="TestTube" class="w-7 h-7 text-ai"></i>
+                    <span>🧪 策略回溯測試 (Backtesting)</span>
+                </h2>
+                <p class="text-gray-300 mb-4">
+                    選擇一期歷史開獎結果，本系統將使用該期之前的數據進行預測，並比對五個策略的命中表現。
+                </p>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="md:col-span-2">
+                        <select id="backtest-selector" class="w-full p-2.5 rounded-lg bg-dark-bg border border-gray-600 text-white focus:ring-ai focus:border-ai">
+                            <option value="" disabled selected>--- 選擇要回溯的期別 ---</option>
+                        </select>
+                    </div>
+                    <div>
+                        <button id="backtest-run-btn" class="w-full py-2.5 px-4 bg-ai hover:bg-ai/90 text-dark-bg font-bold rounded-lg transition duration-200 shadow-md">
+                            運行回溯測試
+                        </button>
+                    </div>
+                </div>
+
+                <div id="backtest-results" class="mt-6">
+                    <!-- Backtest results table will be injected here -->
+                </div>
+            </section>
+
+
             <!-- 數據輸入與 I/O 控制 -->
             <section class="mb-8 p-6 bg-card-bg rounded-xl shadow-2xl border border-primary/30">
-                <h2 class="text-3xl font-bold text-white mb-4">✍️ 數據管理與更新 (Firestore 實時)</h2>
+                <h2 class="text-3xl font-bold text-white mb-4">✍️ 數據管理與更新</h2>
                 
                 <!-- I/O 按鈕 -->
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -1330,7 +1560,7 @@
             
             <!-- 歷史紀錄 (增強呈現) -->
             <section>
-                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">📜 歷史開獎紀錄 (表格內編輯/刪除)</h2>
+                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">📜 歷史開獎紀錄</h2>
                 <div class="bg-card-bg rounded-xl shadow-lg overflow-x-auto max-h-96">
                     <table class="min-w-full divide-y divide-gray-700">
                         <thead class="bg-dark-bg sticky top-0">
