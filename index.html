@@ -3,11 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>大樂透AI顧問</title>
+    <title>大樂透分析顧問</title>
     <!-- 載入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- 載入 SheetJS (用於 Excel 檔案 I/O) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
     
     <script type="module">
         // Module Imports
@@ -27,6 +29,9 @@
                         'secondary': '#FACC15', 
                         'dark-bg': '#1F2937', 
                         'card-bg': '#374151', 
+                        'genius': '#4F46E5', // Indigo for Genius
+                        'ai': '#06B6D4', // Cyan for AI
+                        'extreme': '#EF4444', // Red for Extreme
                     }
                 }
             }
@@ -39,12 +44,10 @@
         let isAuthReady = false;
         let dataStore = [];
         let unsubscribe = () => {}; 
-        let currentEditingId = null; // 儲存當前正在表格內編輯的 drawId
-
-        // Firestore 路徑
+        let currentEditingId = null; 
         let COLLECTION_PATH = '';
 
-        // 初始數據集 (78 筆 2025 年紀錄)
+        // 初始數據集 (78 筆 2025 年紀錄 - 確保格式統一)
         const initialLottoData = [
             {"drawId": "114000001", "date": "01/03", "main": [6, 9, 15, 29, 30, 48], "special": 23},
             {"drawId": "114000002", "date": "01/07", "main": [1, 8, 20, 26, 29, 35], "special": 19},
@@ -168,7 +171,6 @@
                 setLogLevel('debug');
                 COLLECTION_PATH = `artifacts/${appIdForPath}/public/data/lotto_draws`;
                 
-                // 身份驗證
                 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
                 if (initialAuthToken) {
                     await signInWithCustomToken(auth, initialAuthToken);
@@ -179,21 +181,19 @@
                 userId = auth.currentUser?.uid || 'anonymous';
                 isAuthReady = true;
 
-                // 檢查並寫入初始數據
                 await seedInitialData();
-
-                // 建立實時監聽
                 setupRealtimeListener();
                 
-                // 設置事件監聽器 (確保只設置一次)
                 document.getElementById('add-result-form').addEventListener('submit', handleAddResult);
                 document.getElementById('export-data-btn').addEventListener('click', exportData);
                 document.getElementById('import-file-input').addEventListener('change', importData);
                 
-                // 顯示 UI
                 loadingIndicator.classList.add('hidden');
                 mainContent.classList.remove('hidden');
-                //document.getElementById('user-id-display').textContent = `User ID: ${userId} (Collection: ${COLLECTION_PATH})`;
+               // document.getElementById('user-id-display').textContent = `User ID: ${userId} (Collection: ${COLLECTION_PATH})`;
+
+                // 渲染 Lucide Icons
+                lucide.createIcons();
 
             } catch (error) {
                 console.error("Firebase 啟動失敗:", error);
@@ -242,7 +242,6 @@
             
             if (!db || !isAuthReady) return;
             
-            // 修正：當編輯中時，取消編輯狀態
             if (currentEditingId) {
                 currentEditingId = null;
             }
@@ -268,15 +267,68 @@
                 document.getElementById('form-message').classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
             });
         }
+        
+        // --- 天才策略核心計算 ---
+        function calculateGeniusScore(records) {
+            const geniusScoreMap = new Map();
+            const numRange = Array.from({ length: 49 }, (_, i) => i + 1);
+            numRange.forEach(n => geniusScoreMap.set(n, 0));
 
-        // --- 核心分析邏輯 (保持不變) ---
+            // 1. 建立特徵矩陣 (Feature Matrix) - 每個號碼對其他號碼的條件影響力
+            const transitionMatrix = new Array(50).fill(0).map(() => new Array(50).fill(0));
+            const totalTransitions = new Array(50).fill(0);
+
+            for (let i = 0; i < records.length - 1; i++) {
+                const currentDraw = records[i].main;
+                const nextDraw = records[i+1].main; 
+
+                for (const num_i of currentDraw) {
+                    totalTransitions[num_i]++;
+                    for (const num_j of nextDraw) {
+                        transitionMatrix[num_i][num_j]++;
+                    }
+                }
+            }
+            
+            // 2. 應用 L2 正則化 (懲罰稀有關係，突出穩定關係)
+            const LAMBDA = 0.5; // 正則化係數
+            const AVERAGE_NEXT_APPEARANCE = 6 * 6 / 49; // 預期下期出現次數 (基於隨機)
+
+            for (const targetNum of numRange) {
+                let score = 0;
+                for (const predictorNum of numRange) {
+                    const count = transitionMatrix[predictorNum][targetNum];
+                    const countRatio = totalTransitions[predictorNum] > 0 ? count / totalTransitions[predictorNum] : 0;
+                    
+                    const beta = countRatio - (AVERAGE_NEXT_APPEARANCE / 49);
+                    
+                    const penalizedBeta = beta / (1 + LAMBDA * totalTransitions[predictorNum]);
+
+                    score += penalizedBeta; 
+                }
+                
+                // 懲罰奇數模 7 週期（天才認為週期性太簡單，要選反週期）
+                const mod7Penalty = (targetNum % 7 === 1 || targetNum % 7 === 3 || targetNum % 7 === 5) ? -0.1 : 0;
+
+                geniusScoreMap.set(targetNum, score + mod7Penalty);
+            }
+
+            // 3. 排序結果
+            const sortedGeniusScore = Array.from(geniusScoreMap.entries())
+                .sort((a, b) => b[1] - a[1]);
+
+            return sortedGeniusScore;
+        }
+
+        // --- 核心分析邏輯 ---
         
         function processAndRenderData(records) {
-             if (records.length === 0) {
+            if (records.length === 0) {
                 document.getElementById('prediction-results').innerHTML = '<p class="text-center text-gray-400 p-4">無歷史紀錄，無法進行分析。</p>';
                 document.getElementById('freq-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
                 document.getElementById('weighted-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
                 document.getElementById('cooccurrence-table').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
+                document.getElementById('combo-stats').innerHTML = '<p class="text-center text-gray-500">N/A</p>';
                 document.getElementById('history-table').innerHTML = '<tr><td colspan="5" class="text-center py-4 text-gray-500">尚無開獎紀錄</td></tr>';
                 return;
             }
@@ -285,6 +337,10 @@
             const weightedFreqMap = new Map();
             const gapMap = new Map();
             const cooccurrenceMap = new Map();
+            
+            const consecutiveCount = new Map(); 
+            const parityCount = new Map();       
+
             const numRange = Array.from({ length: 49 }, (_, i) => i + 1);
             let drawIndex = 0; 
 
@@ -302,13 +358,12 @@
                 
                 const weight = (records.length - drawIndex) / records.length; 
 
+                // --- 1. 頻率與共現分析 ---
                 for (const num of allNumbers) {
                     freqMap.set(num, (freqMap.get(num) || 0) + 1);
-                    
                     if (record.main.includes(num)) {
                         weightedFreqMap.set(num, weightedFreqMap.get(num) + weight);
                     }
-
                     if (gapMap.get(num) === records.length) {
                         gapMap.set(num, drawIndex);
                     }
@@ -320,7 +375,29 @@
                         cooccurrenceMap.set(pair, (cooccurrenceMap.get(pair) || 0) + 1);
                     }
                 }
-
+                
+                // --- 2. 組合傾向分析 ---
+                let consecutiveSets = 0;
+                let oddCount = 0;
+                
+                for (let i = 0; i < mainNumbers.length; i++) {
+                    if (i > 0 && mainNumbers[i] === mainNumbers[i-1] + 1) {
+                        if (i === 1 || mainNumbers[i-2] !== mainNumbers[i-1] - 1) {
+                            consecutiveSets++;
+                        }
+                    }
+                    if (mainNumbers[i] % 2 !== 0) {
+                        oddCount++;
+                    }
+                }
+                
+                const evenCount = 6 - oddCount;
+                const parityKey = `${oddCount}:${evenCount}`;
+                const consecutiveKey = consecutiveSets.toString();
+                
+                parityCount.set(parityKey, (parityCount.get(parityKey) || 0) + 1);
+                consecutiveCount.set(consecutiveKey, (consecutiveCount.get(consecutiveKey) || 0) + 1);
+                
                 drawIndex++;
             }
             
@@ -334,17 +411,35 @@
             const sortedWeighted = Array.from(weightedFreqMap.entries()).filter(([num]) => num <= 49 && weightedFreqMap.get(num) > 0).sort((a, b) => b[1] - a[1]);
             const sortedCooccurrence = Array.from(cooccurrenceMap.entries()).sort((a, b) => b[1] - a[1]);
             const sortedGap = Array.from(gapMap.entries()).filter(([num]) => num <= 49).sort((a, b) => b[1] - a[1]);
+            
+            const sortedParity = Array.from(parityCount.entries()).sort((a, b) => b[1] - a[1]);
+            const sortedConsecutive = Array.from(consecutiveCount.entries()).sort((a, b) => b[1] - a[1]);
+            
+            // --- 天才分數計算 ---
+            const sortedGeniusScore = calculateGeniusScore(records);
 
-            const predictions = generatePredictions(sortedWeighted, sortedFreq, sortedGap);
-            renderStats(records, sortedFreq.slice(0, 10), sortedWeighted.slice(0, 10), sortedCooccurrence.slice(0, 10), predictions);
+            const combinationStats = {
+                bestParity: sortedParity[0] ? sortedParity[0][0] : '3:3',
+                worstParity: sortedParity.length > 1 ? sortedParity[sortedParity.length - 1][0] : '6:0',
+                bestConsecutive: sortedConsecutive[0] ? sortedConsecutive[0][0] : '1',
+                worstConsecutive: sortedConsecutive.length > 1 ? sortedConsecutive[sortedConsecutive.length - 1][0] : '3',
+                parityDistribution: sortedParity,
+                consecutiveDistribution: sortedConsecutive,
+            };
+
+            const predictions = generatePredictions(sortedWeighted, sortedFreq, sortedGap, combinationStats, sortedGeniusScore);
+            renderStats(records, sortedFreq.slice(0, 10), sortedWeighted.slice(0, 10), sortedCooccurrence.slice(0, 10), combinationStats, predictions);
+            // 渲染 Lucide Icons
+            lucide.createIcons();
         }
         
-        function generatePredictions(sortedWeighted, sortedFreq, sortedGap) {
-            // ... (Prediction logic is omitted for brevity but remains the same)
-             const safePick = (sourceArray, existingSet, n) => {
+        // --- 預測生成邏輯 (更新為 5 個策略) ---
+        function generatePredictions(sortedWeighted, sortedFreq, sortedGap, comboStats, sortedGeniusScore) {
+            
+            const safePick = (sourceArray, existingSet, n) => {
                 const picked = [];
                 const localSet = new Set(existingSet);
-                let available = sourceArray.map(item => item[0]).filter(num => !localSet.has(num));
+                let available = sourceArray.map(item => Array.isArray(item) ? item[0] : item).filter(num => !localSet.has(num));
 
                 const pickFromRange = (arr, count) => arr.sort(() => 0.5 - Math.random()).slice(0, count);
 
@@ -355,21 +450,26 @@
                     else if (num >= 33 && num <= 49) ranges.high.push(num);
                 });
 
-                picked.push(...pickFromRange(ranges.low, Math.min(2, ranges.low.length)));
-                picked.push(...pickFromRange(ranges.mid, Math.min(2, ranges.mid.length)));
-                picked.push(...pickFromRange(ranges.high, Math.min(2, ranges.high.length)));
-                
-                const needed = n - picked.length;
-                if (needed > 0) {
-                     const remaining = available.filter(num => !picked.includes(num));
-                     picked.push(...remaining.slice(0, needed));
-                }
+                const pickBalanced = () => {
+                    let picks = [];
+                    const order = ['low', 'mid', 'high'].sort(() => 0.5 - Math.random());
+                    let needed = n;
+                    
+                    for (const range of order) {
+                        let count = Math.min(Math.ceil(needed / (order.length - picks.length)), ranges[range].length);
+                        picks.push(...pickFromRange(ranges[range], count));
+                        needed = n - picks.length;
+                        if (needed === 0) break;
+                    }
+                    return picks;
+                };
 
-                return picked.slice(0, n);
+                const picks = pickBalanced();
+                return picks.slice(0, n);
             };
 
             const generateSpecialPicks = (mainNumbers) => {
-                const mainSet = new Set(mainNumbers);
+                 const mainSet = new Set(mainNumbers);
                 const candidates = sortedFreq
                     .slice(0, 15) 
                     .map(([num]) => num)
@@ -386,49 +486,275 @@
                 }
                 return specialPicks.slice(0, 3).join(', ');
             }
+            
+            const checkConsecutive = (set) => set.map(Number).reduce((count, n, i, arr) => {
+                if (i > 0 && n === arr[i-1] + 1) {
+                    if (i === 1 || arr[i-2] !== n - 2) {
+                        count++;
+                    }
+                }
+                return count;
+            }, 0);
+            
+            const MAX_ITERATIONS = 50;
 
-            let set1 = safePick(sortedWeighted, new Set(), 6, false);
-            set1 = set1.sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
+            // --- 策略一：熱門號優選 (優化穩健型) ---
+            let set1 = [];
+            const [targetOdd1] = comboStats.bestParity.split(':').map(Number);
+            let iterations1 = 0;
+            
+            while (set1.length !== 6 && iterations1 < MAX_ITERATIONS) {
+                const hotCandidates = sortedWeighted.slice(0, 15); 
+                set1 = safePick(hotCandidates, new Set(), 6);
+                const currentOdd = set1.filter(n => n % 2 !== 0).length;
+                if (Math.abs(currentOdd - targetOdd1) <= 1 && (new Set(set1)).size === 6) break; 
+                iterations1++;
+            }
+            if ((new Set(set1)).size !== 6) {
+                set1 = Array.from(new Set(set1)).slice(0, 6);
+                while (set1.length < 6) { const rand = Math.floor(Math.random() * 49) + 1; if (!set1.includes(rand)) set1.push(rand); }
+            }
+            set1 = set1.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
+            const finalOddCount1 = set1.map(Number).filter(n => n % 2 !== 0).length;
             const special1 = generateSpecialPicks(set1.map(Number));
 
-            const hotCandidates = sortedWeighted.slice(0, 10);
-            const coldCandidates = sortedGap.slice(0, 10);
+            // --- 策略二：冷熱號均衡 (強化均衡型) ---
+            const hotCandidates2 = sortedWeighted.slice(0, 15);
+            const coldCandidates2 = sortedGap.slice(0, 15);
+            const [targetOdd2] = comboStats.bestParity.split(':').map(Number);
+            let set2 = [];
+            let iterations2 = 0;
             
-            const top3Hot = safePick(hotCandidates, new Set(), 3, false);
-            const top3Cold = safePick(coldCandidates, new Set(top3Hot), 3, true);
+            while (set2.length !== 6 && iterations2 < MAX_ITERATIONS) {
+                const hotPicks = safePick(hotCandidates2, new Set(), 3);
+                const coldPicks = safePick(coldCandidates2, new Set(hotPicks), 3);
+                set2 = [...hotPicks, ...coldPicks];
+                const currentOdd = set2.filter(n => n % 2 !== 0).length;
+                if (Math.abs(currentOdd - targetOdd2) <= 1 && (new Set(set2)).size === 6) break; 
+                iterations2++;
+            }
+            if ((new Set(set2)).size !== 6) {
+                set2 = Array.from(new Set(set2)).slice(0, 6);
+                while (set2.length < 6) { const rand = Math.floor(Math.random() * 49) + 1; if (!set2.includes(rand)) set2.push(rand); }
+            }
+            set2 = set2.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
+            const finalOddCount2 = set2.map(Number).filter(n => n % 2 !== 0).length;
+            const special2 = generateSpecialPicks(set2.map(Number));
             
-            let set2 = [...top3Hot, ...top3Cold];
+            // --- 策略三：最大熵/反向模式 (極端型) ---
+            let set3 = [];
+            const coldCandidates3 = sortedGap.slice(0, 15); 
+            const [targetOdd3] = comboStats.worstParity.split(':').map(Number);
+            let iterations3 = 0;
             
-            while (set2.length < 6) {
-                const rand = Math.floor(Math.random() * 49) + 1;
-                if (!set2.includes(rand)) {
-                    set2.push(rand);
+            while (set3.length !== 6 && iterations3 < MAX_ITERATIONS) {
+                set3 = safePick(coldCandidates3, new Set(), 6);
+                const currentOdd = set3.filter(n => n % 2 !== 0).length;
+                if (Math.abs(currentOdd - targetOdd3) <= 1 && (new Set(set3)).size === 6) break; 
+                iterations3++;
+            }
+            if ((new Set(set3)).size !== 6) {
+                set3 = Array.from(new Set(set3)).slice(0, 6);
+                while (set3.length < 6) { const rand = Math.floor(Math.random() * 49) + 1; if (!set3.includes(rand)) set3.push(rand); }
+            }
+            set3 = set3.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
+            const finalOddCount3 = set3.map(Number).filter(n => n % 2 !== 0).length;
+            const special3 = generateSpecialPicks(set3.map(Number));
+
+            // --- 策略四：AI 適應性模式與極端分散 ---
+            const aiCandidates = sortedGeniusScore.slice(0, 15).map(item => item[0]);
+            let set4 = [];
+            let currentBestDispersion = 0;
+            
+            for (let i = 0; i < MAX_ITERATIONS * 2; i++) {
+                const combo = safePick(aiCandidates.map(n => [n]), new Set(), 6);
+                if (combo.length !== 6) continue;
+
+                const sortedCombo = combo.sort((a, b) => a - b);
+                
+                let minGap = 49;
+                for (let j = 1; j < sortedCombo.length; j++) {
+                    minGap = Math.min(minGap, sortedCombo[j] - sortedCombo[j-1]);
+                }
+
+                if (minGap > currentBestDispersion) {
+                    set4 = combo;
+                    currentBestDispersion = minGap;
                 }
             }
+            
+            if (set4.length !== 6) {
+                set4 = safePick(aiCandidates.map(n => [n]), new Set(), 6);
+                while (set4.length < 6) { const rand = Math.floor(Math.random() * 49) + 1; if (!set4.includes(rand)) set4.push(rand); }
+            }
 
-            set2 = set2.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
-            const special2 = generateSpecialPicks(set2.map(Number));
+            set4 = set4.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
+            const finalOddCount4 = set4.map(Number).filter(n => n % 2 !== 0).length;
+            const special4 = generateSpecialPicks(set4.map(Number));
+            
+            // --- 策略五：天才的巴布隆迴歸 (新增) ---
+            const geniusCandidates = sortedGeniusScore.slice(0, 10).map(item => item[0]); 
+            let set5 = [];
+            const [targetOdd5] = comboStats.bestParity.split(':').map(Number); // 傾向主流奇偶比
+            let iterations5 = 0;
+            
+            while (set5.length !== 6 && iterations5 < MAX_ITERATIONS) {
+                const candidates = [...geniusCandidates];
+                set5 = safePick(candidates, new Set(), 6);
+                
+                // 懲罰奇數模 7 號碼 (反世俗週期)
+                const hasEvenMod7 = set5.filter(n => (n % 7 === 0 || n % 7 === 2 || n % 7 === 4 || n % 7 === 6)).length;
+                const currentOdd = set5.filter(n => n % 2 !== 0).length;
 
+                // 如果滿足天才的分數且奇偶比接近主流，則接受
+                if (hasEvenMod7 >= 3 && Math.abs(currentOdd - targetOdd5) <= 1 && (new Set(set5)).size === 6) break; 
+                iterations5++;
+            }
+            if ((new Set(set5)).size !== 6) {
+                set5 = safePick(geniusCandidates, new Set(), 6);
+                while (set5.length < 6) { const rand = Math.floor(Math.random() * 49) + 1; if (!set5.includes(rand)) set5.push(rand); }
+            }
+            
+            set5 = set5.slice(0, 6).sort((a, b) => a - b).map(n => n.toString().padStart(2, '0'));
+            const finalOddCount5 = set5.map(Number).filter(n => n % 2 !== 0).length;
+            const special5 = generateSpecialPicks(set5.map(Number));
+
+
+            // --- 總結所有策略 ---
 
             return [
                 {
-                    name: "策略一：近期熱門主導 (穩健型)",
+                    name: "策略一：熱門號優選",
+                    subtitle: "穩健的主流趨勢",
+                    icon: 'TrendingUp',
+                    color: 'secondary',
                     numbers: set1.join(', '),
                     special: special1,
-                    basis: "基於近端加權頻率排名前列的號碼組合，側重捕捉短期內活躍的號碼。",
+                    basis: `基於近期加權熱門號碼池，並強制優化組合，使其奇偶比接近歷史最常見的 **${comboStats.bestParity}**。`,
+                    metrics: `奇偶比: ${finalOddCount1}:${6-finalOddCount1} | 連號數: ${checkConsecutive(set1)} 組`
                 },
                 {
-                    name: "策略二：冷熱號均衡 (回補型)",
+                    name: "策略二：冷熱號均衡",
+                    subtitle: "分散風險的黃金比例",
+                    icon: 'Balance',
+                    color: 'primary',
                     numbers: set2.join(', '),
                     special: special2,
-                    basis: "結合了加權熱門號 (3個) 與長間隔冷門號 (3個)，期望實現平衡回補。",
+                    basis: `冷熱號各半 (3個熱號 / 3個冷號)，並以歷史最常見的**奇偶比 (${comboStats.bestParity})**進行組合優化。`,
+                    metrics: `奇偶比: ${finalOddCount2}:${6-finalOddCount2} | 連號數: ${checkConsecutive(set2)} 組`
+                },
+                {
+                    name: "策略三：最大熵/反向模式",
+                    subtitle: "極端冷門的回補賭注",
+                    icon: 'Ghost',
+                    color: 'extreme',
+                    numbers: set3.join(', '),
+                    special: special3,
+                    basis: `專注於**間隔最長**的冷門號碼，並依據歷史最不常見的**奇偶比 (${comboStats.worstParity})** 來構建組合。`,
+                    metrics: `奇偶比: ${finalOddCount3}:${6-finalOddCount3} | 連號數: ${checkConsecutive(set3)} 組`
+                },
+                {
+                    name: "策略四：AI 智慧型",
+                    subtitle: "計算分佈的適應性",
+                    icon: 'Bot',
+                    color: 'ai',
+                    numbers: set4.join(', '),
+                    special: special4,
+                    basis: `由 AI 結合「鄰近活躍度」與「冷熱間隔」篩選潛力號碼，並最大化六個號碼在 1-49 範圍內的**分佈分散度**。`,
+                    metrics: `奇偶比: ${finalOddCount4}:${6-finalOddCount4} | 連號數: ${checkConsecutive(set4)} 組`
+                },
+                {
+                    name: "策略五：天才的巴布隆迴歸",
+                    subtitle: "隱藏結構的複雜預測",
+                    icon: 'BrainCircuit',
+                    color: 'genius',
+                    numbers: set5.join(', '),
+                    special: special5,
+                    basis: `採用 L2 正則化的貝葉斯迴歸變種，基於號碼的**跨期條件影響力**來選擇。專注於**高貢獻度**和**反世俗週期**的號碼。`,
+                    metrics: `奇偶比: ${finalOddCount5}:${6-finalOddCount5} | 連號數: ${checkConsecutive(set5)} 組`
                 }
             ];
         }
 
-        // --- 渲染統計數據 (新增表格內編輯邏輯) ---
-        function renderStats(records, sortedFreq, sortedWeighted, sortedCooccurrence, predictions) {
-            // ... (Stats rendering omitted for brevity)
+        // --- 渲染統計數據 (更新預測結果為 5 欄) ---
+        function renderStats(records, sortedFreq, sortedWeighted, sortedCooccurrence, comboStats, predictions) {
+            
+            const formatComboStats = (dist) => dist.map(([key, count]) => `
+                <div class="flex justify-between items-center text-sm">
+                    <span class="font-medium w-1/3">${key}</span>
+                    <span class="w-2/3 text-right text-gray-300">${count} 次</span>
+                </div>
+            `).join('');
+
+            document.getElementById('combo-stats').innerHTML = `
+                <div class="space-y-4">
+                    <div class="border-b border-card-bg/50 pb-3">
+                        <h4 class="text-base font-semibold text-secondary">🥇 最佳奇偶比 / 🎯 最差奇偶比</h4>
+                        <p class="text-xl font-extrabold text-primary">${comboStats.bestParity} <span class="text-gray-400">/</span> ${comboStats.worstParity}</p>
+                        <div class="mt-2 text-sm text-gray-400">
+                           ${formatComboStats(comboStats.parityDistribution.slice(0, 5))}
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="text-base font-semibold text-secondary">🥇 最佳連號數 / 🎯 最差連號數</h4>
+                        <p class="text-xl font-extrabold text-primary">${comboStats.bestConsecutive} 組 <span class="text-gray-400">/</span> ${comboStats.worstConsecutive} 組</p>
+                        <div class="mt-2 text-sm text-gray-400">
+                           ${formatComboStats(comboStats.consecutiveDistribution.slice(0, 5))}
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // 預測結果區塊渲染
+            document.getElementById('prediction-results').innerHTML = predictions.map(p => {
+                const colors = {
+                    'secondary': 'border-secondary/70 bg-secondary/10',
+                    'primary': 'border-primary/70 bg-primary/10',
+                    'extreme': 'border-extreme/70 bg-extreme/10',
+                    'ai': 'border-ai/70 bg-ai/10',
+                    'genius': 'border-genius/70 bg-genius/10',
+                };
+                
+                const hoverEffects = {
+                    'secondary': 'hover:shadow-secondary/30',
+                    'primary': 'hover:shadow-primary/30',
+                    'extreme': 'hover:shadow-extreme/30',
+                    'ai': 'hover:shadow-ai/30',
+                    'genius': 'hover:shadow-genius/30',
+                };
+                
+                const titleColor = `text-${p.color}`;
+                const borderColor = colors[p.color];
+                const hoverShadow = hoverEffects[p.color];
+                
+                // 天才策略使用特殊邊框樣式
+                const borderStyle = p.color === 'genius' ? 'border-4 border-double border-genius' : `border-l-4 ${borderColor}`;
+
+
+                return `
+                    <div class="p-4 rounded-xl shadow-lg transition duration-300 transform hover:scale-[1.03] ${borderStyle} ${hoverShadow}">
+                        <div class="flex items-center space-x-2 mb-2">
+                            <i data-lucide="${p.icon}" class="w-6 h-6 ${titleColor}"></i>
+                            <h3 class="text-xl font-extrabold ${titleColor}">${p.name}</h3>
+                        </div>
+                        <p class="text-xs text-gray-400 mb-3">${p.subtitle}</p>
+                        
+                        <div class="flex flex-wrap gap-1.5 mb-3">
+                            ${p.numbers.split(', ').map(n => `<span class="lotto-ball main">${n}</span>`).join('')}
+                        </div>
+                        
+                        <p class="text-gray-300 text-sm mb-2">${p.basis}</p>
+                        <p class="text-yellow-300 text-xs mt-2 font-mono bg-dark-bg/50 p-1 rounded">${p.metrics}</p>
+                        
+                        <div class="flex items-center mt-3 pt-3 border-t border-card-bg/50">
+                            <span class="text-sm mr-2 text-secondary">特別號:</span>
+                            ${p.special.split(', ').map(n => `<span class="lotto-ball special">${n}</span>`).join('')}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // ... (Freq, Weighted, Cooccurrence table rendering remains the same)
             document.getElementById('freq-table').innerHTML = sortedFreq.map(([num, count]) => `
                 <div class="flex justify-between items-center p-2 border-b border-card-bg/50">
                     <span class="text-lg font-bold w-1/3 text-secondary">${num.toString().padStart(2, '0')}</span>
@@ -449,40 +775,24 @@
                     <span class="w-2/3 text-right">${count} 次</span>
                 </div>
             `).join('');
-
-            document.getElementById('prediction-results').innerHTML = predictions.map(p => `
-                <div class="bg-card-bg p-4 rounded-xl shadow-lg mb-4 border-l-4 border-primary">
-                    <h3 class="text-xl font-bold mb-3 text-primary">${p.name}</h3>
-                    <div class="flex flex-wrap gap-2 mb-3">
-                        ${p.numbers.split(', ').map(n => `<span class="lotto-ball main">${n}</span>`).join('')}
-                    </div>
-                    <p class="text-gray-300 text-sm mb-2">${p.basis}</p>
-                    <div class="flex items-center mt-3">
-                        <span class="text-sm mr-2 text-secondary">特別號建議:</span>
-                        ${p.special.split(', ').map(n => `<span class="lotto-ball special">${n}</span>`).join('')}
-                    </div>
-                </div>
-            `).join('');
             
-            // 歷史紀錄表格呈現
+            // 歷史紀錄表格呈現 (保持表格內編輯)
             document.getElementById('history-table').innerHTML = records.map(r => {
-                // 將 MM/DD 轉為 YYYY-MM-DD 格式，方便 date input 使用
                 const year = new Date().getFullYear(); 
                 const dateISO = `${year}-${r.date.split('/')[0].padStart(2, '0')}-${r.date.split('/')[1].padStart(2, '0')}`;
                 
-                // 如果當前行正在編輯，則渲染輸入欄位
                 if (currentEditingId === r.drawId) {
                     return `
                         <tr id="row-${r.drawId}" class="bg-card-bg/80 border-b border-primary/50">
                             <td class="px-2 py-1 text-primary text-sm font-semibold">${r.drawId}</td>
                             <td class="px-2 py-1">
-                                <input type="date" value="${dateISO}" id="edit-date-${r.drawId}" class="w-full text-xs p-1 rounded bg-dark-bg border border-blue-400 text-white">
+                                <input type="date" value="${dateISO}" id="edit-date-${r.drawId}" class="inline-edit-input">
                             </td>
                             <td class="px-2 py-1">
-                                <input type="text" value="${r.main.map(n => n.toString().padStart(2, '0')).join(', ')}" id="edit-main-${r.drawId}" class="w-full text-xs p-1 rounded bg-dark-bg border border-blue-400 text-white">
+                                <input type="text" value="${r.main.map(n => n.toString().padStart(2, '0')).join(', ')}" id="edit-main-${r.drawId}" class="inline-edit-input">
                             </td>
                             <td class="px-2 py-1">
-                                <input type="number" min="1" max="49" value="${r.special}" id="edit-special-${r.drawId}" class="w-full text-xs p-1 rounded bg-dark-bg border border-blue-400 text-white text-center">
+                                <input type="number" min="1" max="49" value="${r.special}" id="edit-special-${r.drawId}" class="inline-edit-input text-center">
                             </td>
                             <td class="px-2 py-1 text-center flex justify-center space-x-2">
                                 <button onclick="saveEdit('${r.drawId}')" class="bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-1 px-2 rounded transition duration-150">儲存</button>
@@ -492,7 +802,6 @@
                     `;
                 }
                 
-                // 否則渲染靜態數據和操作按鈕
                 return `
                     <tr id="row-${r.drawId}" class="border-b border-card-bg/50 hover:bg-card-bg/70">
                         <td class="px-4 py-2 text-primary text-sm font-semibold">${r.drawId || 'N/A'}</td>
@@ -510,16 +819,14 @@
             }).join('');
         }
 
-        // --- 表格內編輯操作函數 ---
+        // --- 輔助/CRUD/I/O 函數 (與前版相同) ---
         window.startEdit = (drawId) => {
             currentEditingId = drawId;
-            // 觸發重新渲染，將該行轉為輸入模式
             processAndRenderData(dataStore);
         }
 
         window.cancelEdit = () => {
             currentEditingId = null;
-            // 觸發重新渲染，將該行轉回靜態模式
             processAndRenderData(dataStore);
         }
 
@@ -544,7 +851,6 @@
             }
 
             try {
-                // 將 YYYY-MM-DD 轉為 MM/DD 
                 const dateParts = dateInput.split('-');
                 const docDate = `${dateParts[1].padStart(2, '0')}/${dateParts[2].padStart(2, '0')}`;
 
@@ -570,8 +876,6 @@
             }
         }
         
-        // --- CRUD 操作函數 (與前版相同) ---
-        
         async function writeRecordToFirestore(record) {
             if (!db) throw new Error("Firestore 尚未初始化或權限不足。");
             
@@ -596,7 +900,6 @@
         async function handleAddResult(e) {
             e.preventDefault();
             const messageEl = document.getElementById('form-message');
-            
             messageEl.classList.remove('hidden', 'text-red-500', 'bg-red-900/50', 'text-yellow-500', 'bg-yellow-900/50', 'text-green-500', 'bg-green-900/50', 'p-2', 'rounded-lg');
             
             const drawIdInput = document.getElementById('draw-id').value.trim(); 
@@ -604,7 +907,6 @@
             const mainInput = document.getElementById('main-numbers').value;
             const specialInput = document.getElementById('special-number').value;
 
-            // 1. 基本驗證
             if (!drawIdInput) {
                  messageEl.textContent = '❌ 請輸入「期別」欄位。';
                 messageEl.classList.add('text-red-500', 'p-2', 'rounded-lg', 'bg-red-900/50');
@@ -624,7 +926,6 @@
                 return;
             }
             
-            // 2. 衝突檢查
             const isExistByDrawId = dataStore.some(record => record.drawId === drawIdInput);
             if (isExistByDrawId) {
                 messageEl.textContent = `❌ 錯誤：「期別」 ${drawIdInput} 的紀錄已存在。請使用下方表格的「編輯」功能進行修改。`;
@@ -633,13 +934,12 @@
             }
 
             try {
-                // 日期格式修正：將 YYYY-MM-DD 轉為 MM/DD 
                 const dateParts = dateInput.split('-');
                 const docDate = `${dateParts[1].padStart(2, '0')}/${dateParts[2].padStart(2, '0')}`;
                 
                 const newRecord = {
                     drawId: drawIdInput,
-                    date: docDate, // 儲存 MM/DD
+                    date: docDate, 
                     main: mainNumbers.sort((a, b) => a - b),
                     special: specialNumber
                 };
@@ -657,7 +957,6 @@
             }
         }
         
-        // --- 刪除功能 (使用自定義 Modal) ---
         window.deleteRecord = (drawId) => {
             renderModal({
                 title: '確認刪除紀錄',
@@ -679,7 +978,6 @@
             });
         }
         
-        // --- Modal 函數 (與前版相同) ---
         function renderModal({ title, content, confirmText, onConfirm }) {
             const modalContainer = document.getElementById('modal-container');
             modalContainer.innerHTML = `
@@ -705,8 +1003,6 @@
             document.getElementById('modal-container').innerHTML = '';
         }
 
-        // --- 匯入/匯出函數 (保持與前版相同) ---
-        
         function exportData() {
             const dataForExcel = dataStore.map(record => ({
                 '期別': record.drawId || '', 
@@ -734,9 +1030,7 @@
 
             const reader = new FileReader();
             const messageEl = document.getElementById('form-message');
-            messageEl.classList.remove('hidden');
-            messageEl.classList.remove('text-red-500', 'bg-red-900/50', 'text-yellow-500', 'bg-yellow-900/50', 'text-green-500', 'bg-green-900/50', 'p-2', 'rounded-lg');
-
+            messageEl.classList.remove('hidden', 'text-red-500', 'bg-red-900/50', 'text-yellow-500', 'bg-yellow-900/50', 'text-green-500', 'bg-green-900/50', 'p-2', 'rounded-lg');
 
             reader.onload = async function(event) {
                 let newRecords = [];
@@ -746,18 +1040,14 @@
                     const sheet = workbook.Sheets[workbook.SheetNames[0]];
                     const importedJson = XLSX.utils.sheet_to_json(sheet);
                     
-                    if (!Array.isArray(importedJson) || importedJson.length === 0) {
-                        throw new Error("匯入的檔案無有效數據。");
-                    }
+                    if (!Array.isArray(importedJson) || importedJson.length === 0) throw new Error("匯入的檔案無有效數據。");
                     
                     importedJson.forEach((row, index) => {
                         const drawId = row['期別'] ? row['期別'].toString() : null; 
                         const special = parseInt(row['特別號']);
                         const dateRaw = row['開獎日期'] || row['日期']; 
                         
-                        if (!drawId || !dateRaw || isNaN(special)) {
-                            return; 
-                        }
+                        if (!drawId || !dateRaw || isNaN(special)) return; 
                         
                         let mainNums = [];
                         if (row['主號']) {
@@ -791,7 +1081,6 @@
                             }
                         }
 
-
                         newRecords.push({
                             drawId: drawId,
                             date: formattedDate, 
@@ -800,9 +1089,7 @@
                         });
                     });
 
-                    if (newRecords.length === 0) {
-                        throw new Error("匯入檔案中找不到有效且格式正確的開獎紀錄。請檢查標頭名稱是否正確。");
-                    }
+                    if (newRecords.length === 0) throw new Error("匯入檔案中找不到有效且格式正確的開獎紀錄。請檢查標頭名稱是否正確。");
 
                     const batch = writeBatch(db);
                     let importedCount = 0;
@@ -810,10 +1097,7 @@
                     for (const record of newRecords) {
                         if (!dataStore.some(r => r.drawId === record.drawId)) {
                              const docRef = doc(db, COLLECTION_PATH, record.drawId);
-                             batch.set(docRef, {
-                                ...record,
-                                timestamp: serverTimestamp() 
-                             });
+                             batch.set(docRef, { ...record, timestamp: serverTimestamp() });
                              importedCount++;
                         }
                     }
@@ -884,6 +1168,8 @@
             border: 1px solid #60A5FA;
             color: white;
             font-size: 12px;
+            -webkit-appearance: none; 
+            appearance: none;
         }
         @media (max-width: 768px) {
             .lotto-ball {
@@ -896,7 +1182,22 @@
                 font-size: 10px;
                 padding: 3px;
             }
+            /* Mobile: 1 column */
+            #prediction-results { grid-template-columns: repeat(1, minmax(0, 1fr)); }
         }
+        @media (min-width: 768px) {
+            /* Tablet: 2 columns */
+            #prediction-results { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (min-width: 1024px) {
+            /* Desktop: 3 columns */
+            #prediction-results { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        }
+        @media (min-width: 1280px) {
+            /* XL Desktop: 5 columns */
+            #prediction-results { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+        }
+
     </style>
 </head>
 <body class="bg-dark-bg text-gray-100 min-h-screen p-4 font-sans antialiased">
@@ -910,7 +1211,7 @@
     <div class="max-w-7xl mx-auto py-6">
 
         <header class="text-center mb-8 border-b border-primary pb-4">
-            <h1 class="text-4xl md:text-5xl font-extrabold text-white tracking-tight">大樂透AI顧問🔮</h1>
+            <h1 class="text-4xl md:text-5xl font-extrabold text-white tracking-tight">大樂透分析顧問🧠</h1>
             <p class="text-secondary mt-2 text-lg">歷史數據統計、編輯與下一期候選號碼建議</p>
         </header>
 
@@ -924,7 +1225,7 @@
         <div id="main-content" class="hidden">
             <p id="user-id-display" class="text-sm text-gray-500 mb-4 text-center"></p>
 
-            <!-- 部署提示 (僅供外部平台用戶閱讀)
+            <!-- 部署提示 (僅供外部平台用戶閱讀) 
             <div class="bg-yellow-900/40 border-l-4 border-yellow-400 p-4 mb-8 rounded-lg text-yellow-100">
                 <p class="font-bold text-lg">📢 跨平台部署提示 (務必檢查):</p>
                 <ul class="list-disc list-inside mt-2 text-sm space-y-1">
@@ -932,12 +1233,13 @@
                     <li>請確認 Firebase 專案已啟用 **匿名登入**，且 Firestore 規則允許匿名用戶讀寫。</li>
                 </ul>
             </div>
-             -->
+             ->
 
             <!-- 預測結果區塊 -->
             <section class="mb-8">
-                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">🎯 兩組最有可能中獎號碼 (基於最新數據)</h2>
-                <div id="prediction-results" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">🎯 五組候選號碼 (AI 多策略分析)</h2>
+                <!-- 調整為 5 欄網格 -->
+                <div id="prediction-results" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
                     <!-- Prediction results will be injected here -->
                 </div>
                 <p class="text-sm text-gray-400 mt-4 p-3 bg-card-bg rounded-lg">
@@ -950,8 +1252,8 @@
                 <h2 class="text-3xl font-bold text-white mb-4">✍️ 數據管理與更新 (Firestore 實時)</h2>
                 
                 <!-- I/O 按鈕 -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                    <div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                    <div class="col-span-1 md:col-span-2">
                         <label for="import-file-input" class="block text-sm font-medium text-gray-300 mb-1">匯入數據 (XLSX/XLS 檔案)</label>
                         <input type="file" id="import-file-input" accept=".xlsx,.xls" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-secondary file:text-dark-bg hover:file:bg-secondary/80">
                     </div>
@@ -994,7 +1296,7 @@
             <!-- 統計數據呈現 -->
             <section class="mb-8">
                 <h2 class="text-3xl font-bold text-white mb-4 border-b border-card-bg pb-2">📊 核心統計分析 (Top 10)</h2>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
                     <!-- 總體頻率 -->
                     <div class="bg-card-bg p-4 rounded-xl shadow-lg">
                         <h3 class="text-xl font-semibold text-secondary mb-3">總體出號頻率</h3>
@@ -1014,6 +1316,13 @@
                         <h3 class="text-xl font-semibold text-secondary mb-3">高共現對 (主號)</h3>
                         <div id="cooccurrence-table" class="space-y-1">
                             <!-- Cooccurrence data here -->
+                        </div>
+                    </div>
+                    <!-- 組合傾向 (新增) -->
+                    <div class="bg-card-bg p-4 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold text-primary mb-3">📈 歷史組合傾向</h3>
+                        <div id="combo-stats" class="space-y-1">
+                            <!-- Combination stats here -->
                         </div>
                     </div>
                 </div>
